@@ -1,0 +1,10 @@
+scenario,approach,hours,total_barrels,safety_violations,ramp_violations,rise_time_hr,settling_time_hr,overshoot_bbl_hr,overshoot_pct_of_step,steady_state_offset_bbl_hr
+A_startup_to_target,MPC,80,7681.068398789956,2,0,,,,,
+A_startup_to_target,Fixed,80,7730.451155981351,3,0,,,,,
+A_startup_to_target,PI,80,7727.040090367494,3,0,,,,,
+B_target_tracking,MPC,140,17759.02663737711,0,0,12.0,73.0,3.72375519854927,7.44751039709854,0.872880811753987
+B_target_tracking,Fixed,140,17748.436276036802,0,0,12.0,48.0,3.181726905434715,6.36345381086943,0.19443194638182604
+B_target_tracking,PI,140,17651.09071406241,0,0,12.0,70.0,5.045996472462662,10.091992944925323,0.230223326020905
+C_infeasible_target,MPC,100,15884.748111839486,0,0,,,,,
+C_infeasible_target,Fixed,100,16016.950153684085,0,0,,,,,
+C_infeasible_target,PI,100,18880.48351527176,169,0,,,,,

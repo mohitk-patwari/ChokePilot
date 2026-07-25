@@ -16,9 +16,16 @@ from pathlib import Path
 
 import pandas as pd
 import matplotlib.pyplot as plt
+from matplotlib.patches import Patch
 
 sys.path.insert(0, str(Path(__file__).parent / "data"))
-from simulator import Simulator  # noqa: E402
+from simulator import Simulator, AP_ALARM_BAND  # noqa: E402
+
+# controller.py's fallback-branch explanation is the only place this phrase appears
+# (the feasible branch always says "Moved choke to... among N feasible options") --
+# used to shade fallback hours on the choke plot without changing decide()'s
+# documented-pure return signature just for logging.
+_FALLBACK_MARKER = "psi-steps over horizon"
 
 from identify import (  # noqa: E402
     run_step_test, identify_model, fit_residual_correction,
@@ -64,15 +71,18 @@ def run_scenario(name, initial_choke, target_fn, hours, model, limits, sim_seed,
         choke, explanation = ctrl.decide(state, choke, target)
         ctrl.commit(choke)
         q, whp, flp, bhp = sim.step(choke)
-        rows.append((t, target, q, whp, flp, bhp, choke, explanation))
+        monitored = sim.read_monitored()
+        rows.append((t, target, q, whp, flp, bhp, monitored["WHT"], monitored["AP"],
+                     choke, explanation, _FALLBACK_MARKER in explanation))
 
-    df = pd.DataFrame(rows, columns=["Time_hr", "Target_Q", "Q", "WHP", "FLP", "BHP", "Choke", "Why"])
+    df = pd.DataFrame(rows, columns=["Time_hr", "Target_Q", "Q", "WHP", "FLP", "BHP",
+                                      "WHT", "AP", "Choke", "Why", "Fallback"])
     df.to_csv(OUTPUT_DIR / f"scenario_{name}.csv", index=False)
     return df
 
 
 def plot_scenario(name, title, df, limits):
-    fig, axes = plt.subplots(5, 1, figsize=(11, 14), sharex=True)
+    fig, axes = plt.subplots(7, 1, figsize=(11, 19), sharex=True)
 
     axes[0].plot(df.Time_hr, df.Target_Q, "--", color="gray", label="Target")
     axes[0].plot(df.Time_hr, df.Q, color="tab:blue", label="Actual")
@@ -91,10 +101,30 @@ def plot_scenario(name, title, df, limits):
             ax.axhline(hi, color="red", linestyle=":", linewidth=1)
         ax.set_ylabel(label)
 
-    axes[4].step(df.Time_hr, df.Choke, where="post", color="black")
-    axes[4].set_ylabel("Choke (%)")
-    axes[4].set_ylim(-2, 102)
-    axes[4].set_xlabel("Time (hr)")
+    # WHT/AP: monitored-but-not-constrained extension channels (see
+    # data/simulator.py) -- greyed out and captioned so they read as situational
+    # awareness, not a fifth/sixth safety constraint the controller is enforcing.
+    for ax, col, label in zip(axes[4:6], ["WHT", "AP"], ["WHT (deg F)", "AP (psi)"]):
+        ax.plot(df.Time_hr, df[col], color="0.65")
+        ax.set_ylabel(label, color="0.4")
+        ax.tick_params(colors="0.4")
+        ax.set_title("monitored, not constrained -- extension path",
+                      fontsize=8, color="0.5", loc="right", style="italic")
+    ap_lo, ap_hi = AP_ALARM_BAND
+    axes[5].axhline(ap_lo, color="0.65", linestyle="--", linewidth=1)
+    axes[5].axhline(ap_hi, color="0.65", linestyle="--", linewidth=1)
+
+    axes[6].step(df.Time_hr, df.Choke, where="post", color="black")
+    axes[6].set_ylabel("Choke (%)")
+    axes[6].set_ylim(-2, 102)
+    axes[6].set_xlabel("Time (hr)")
+    # Shade hours where the safety-fallback branch fired (no candidate move was fully
+    # feasible over the lookahead, so the controller picked the least-bad one).
+    for t in df.loc[df.Fallback, "Time_hr"]:
+        axes[6].axvspan(t, t + 1, color="red", alpha=0.15, linewidth=0)
+    if df.Fallback.any():
+        axes[6].legend(handles=[Patch(facecolor="red", alpha=0.15, label="safety fallback active")],
+                        loc="upper right", fontsize=8)
 
     fig.tight_layout()
     path = OUTPUT_DIR / f"scenario_{name}.png"

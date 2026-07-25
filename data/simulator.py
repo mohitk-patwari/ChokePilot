@@ -30,6 +30,18 @@ outside that band (needed for Scenario A startup and Scenario C push-to-max) is 
 extrapolation of the fitted saturating curves, not observed data. The curves are
 monotonic and bounded by construction so extrapolation stays physically sane, but it is
 still a guess -- replace with real data if/when available.
+
+Also exposes two MONITORED-BUT-NOT-CONSTRAINED channels, per the brief's own
+description of what a real installation would additionally surface: Wellhead
+Temperature (WHT, declining with choke opening -- Joule-Thomson cooling as the
+pressure drop across a more-open choke expands the fluid) and Annulus Pressure (AP,
+flat -- decoupled from choke position in this simplified single-well model -- with a
+simple integrity-alarm band for situational awareness only). Unlike Q/WHP/FLP/BHP,
+there is no reference-CSV column for either, so their curves are HAND-SET PLACEHOLDER
+PARAMETERS (not fit to data) chosen only to be qualitatively right (monotonic decline
+for WHT, flat for AP) -- swap for real calibration if data ever exists. They never
+feed the controller's safety check or MPC objective -- only into logging/plots, via
+Simulator.read_monitored().
 """
 
 from pathlib import Path
@@ -154,6 +166,28 @@ def _calibrate():
 
 PARAMS = _calibrate()  # calibrated once at import time, ~1s
 
+# Monitored-but-not-constrained extension channels -- see module docstring. Same
+# {A, B, uh, tau, theta_steps, noise_std, clip_nonneg} schema as the fitted channels
+# (so the existing steady_state_from_params/Simulator dynamics loop needs no special
+# case for them), but hand-set rather than fit: no CSV column exists for either.
+MONITORED_PARAMS = {
+    # WHT(u) = A + B*u/(u+uh), B < 0 -> monotonic decline with choke opening (JT
+    # cooling), saturating rather than unboundedly dropping. ~160F shut-in -> ~120F
+    # near fully open.
+    "WHT": {"A": 160.0, "B": -45.0, "uh": 25.0, "tau": 2.5, "theta_steps": 1,
+            "noise_std": 1.5, "clip_nonneg": False},
+    # AP(u): B=0 -> exactly flat in choke position (annulus is decoupled from the
+    # tubing choke in this simplified model), constant plus sensor noise only.
+    "AP": {"A": 1800.0, "B": 0.0, "uh": 50.0, "tau": 6.0, "theta_steps": 0,
+           "noise_std": 8.0, "clip_nonneg": False},
+}
+PARAMS.update(MONITORED_PARAMS)
+
+# Illustrative-only integrity-alarm band for AP: informational reference band for the
+# plots, never checked or enforced anywhere -- that's the point of "monitored, not
+# constrained."
+AP_ALARM_BAND = (1650.0, 1950.0)
+
 
 def steady_state_from_params(p, u, correction_coefs=None):
     """The one canonical y_ss(u) formula: physics steady-state map, optionally plus a
@@ -185,6 +219,11 @@ class Simulator:
     Ramp-rate (+-5 %/interval) is NOT enforced here -- that is the controller's
     responsibility, matching how a real actuator will accept whatever setpoint it's
     given while the control logic is what's supposed to behave safely.
+
+    WHT and AP (see module docstring) evolve internally alongside Q/WHP/FLP/BHP every
+    step() call, but are deliberately left out of step()'s return tuple so the
+    challenge's exact `Q, WHP, FLP, BHP = simulator.step(...)` interface is untouched.
+    Read them via read_monitored().
     """
 
     def __init__(self, initial_choke=0.0, seed=None):
@@ -202,6 +241,15 @@ class Simulator:
             self._true_state[ch] + self._rng.normal(0.0, PARAMS[ch]["noise_std"])
             for ch in ("Q", "WHP", "FLP", "BHP")
         )
+
+    def read_monitored(self):
+        """WHT/AP readings (see module docstring) -- monitored-but-not-constrained,
+        so kept out of step()'s return tuple and off the controller's radar entirely.
+        Call after step(); noise is injected the same way as _read()'s."""
+        return {
+            ch: self._true_state[ch] + self._rng.normal(0.0, PARAMS[ch]["noise_std"])
+            for ch in ("WHT", "AP")
+        }
 
     def step(self, choke_position):
         u = float(np.clip(choke_position, 0.0, 100.0))
