@@ -5,18 +5,23 @@ actually executing `identify.py`, `verify_identification.py`, `scenarios.py`,
 `seed_sweep.py`, and `baselines.py` against the current code — none are carried
 over from an earlier draft.*
 
-**STALE, flagged not silently fixed:** §1.2's τ/θ table and §3.2/3.3/3.6's exact
+**STALE, flagged not silently fixed:** §1.2's τ/θ table and §3.2/3.3's exact
 percentages predate two fixes that changed the underlying numbers slightly
 (their headline conclusions are unaffected, but the specific figures are not
 current): (1) a one-sample lag between `_simulate_fopdt` and `Simulator.step()`
 that biased every identified τ/θ (θ now matches true θ exactly; τ error
 dropped further, e.g. Q's "unexplained" ~19% bias resolved to ~3%), and (2) a
 move-suppression fix to `MPCController.decide()` (§3.4) that changed Scenario
-A/B/C's exact trajectories. §2.3, §3.1, §3.4, and §3.7's Lessons Learned are
-current as of this revision — §2.3/3.1 were rewritten from scratch after
+A/B/C's exact trajectories. §2.3, §3.1, §3.4, §3.6, and §3.7's Lessons Learned
+are current as of this revision — §2.3/3.1 were rewritten from scratch after
 finding an actual error (Scenario A's violations were misattributed to
-"extrapolation," not the deterministic FLP-ceiling cause identified here). A
-full re-sync of §1.2 and §3.2/3.3/3.6 against both fixes remains a follow-up.
+"extrapolation," not the deterministic FLP-ceiling cause identified here), and
+§3.6 now includes Scenario D and the Fixed-operator-proxy baseline, with a
+corrected headline: MPC ties Fixed-optimal in all four scenarios (including
+D, which was built to find a difference and didn't) — the real, consistent
+win is envelope-awareness itself vs. the operator-proxy, not live re-planning
+vs. a static setpoint. A full re-sync of §1.2 and §3.2/3.3 against both
+earlier fixes remains a follow-up.
 
 ## 0. Why this exists
 
@@ -398,38 +403,96 @@ for here and hasn't been tried.
 
 Full per-seed results: `outputs/seed_sweep_results.csv`.
 
-### 3.6 Baseline comparison (`baselines.py`): MPC vs. fixed choke vs. PI
+### 3.6 Baseline comparison: MPC vs. Fixed-optimal vs. Fixed-operator-proxy vs. PI
 
-Two baselines, run over identical scenarios/model/limits/seeds for an
+Three baselines, run over identical scenarios/model/limits/seeds as the MPC for an
 apples-to-apples comparison:
 
-- **Fixed** — the choke the identified model says holds the target at steady
-  state, walked back until its own steady-state predictions clear the tightened
-  envelope, then held (models pain point #2: set once, left alone).
-- **PI** — velocity-form PI on oil rate, IMC-tuned from the identified model,
-  blind to WHP/FLP/BHP by design (the point of the comparison).
+- **Fixed-optimal** (`baselines.py`) — the choke the identified model says holds the
+  target at steady state, walked back until its own steady-state predictions clear
+  the tightened envelope, then held. Still model-informed and envelope-aware — this
+  is what a good engineer *with* the identification pipeline would set, not a real
+  operator without it. Models the "set once, left alone" half of pain point #2, but
+  not pain point #1's conservatism.
+- **Fixed-operator-proxy** (`baselines.py`) — no model, no envelope knowledge at
+  all: a naive straight-line read of choke-vs-oil-rate off the raw reference CSV
+  (the only data an operator without this pipeline would have), then backed off 15
+  percentage points from wherever that naive line says the target is met. Models
+  pain point #1 directly: *"operators baby the choke conservatively (fear of sand/
+  formation damage), leaving real production capacity unused."*
+- **PI** — velocity-form PI on oil rate, IMC-tuned from the identified model, blind
+  to WHP/FLP/BHP by design.
 
-| Scenario | Approach | Safety violations | Total barrels | Notes |
+Also added: **Scenario D — Disturbance Rejection** (`scenario_d.py`), a deliberate,
+explicit relaxation of the brief's "no changing reservoir properties" simplification,
+built specifically to test whether MPC's continuous re-planning beats a static
+setpoint once the plant genuinely drifts underneath both. BHP's identified
+steady-state offset drifts −0.5 psi/h for 200h (reservoir decline) at a constant
+100 bbl/hr target; the identified model itself is fit once, before the disturbance
+starts, and never updated — realistic to how a real deployment re-identifies
+occasionally, not continuously.
+
+| Scenario | Approach | Safety violations | Total barrels | Time-to-first-violation |
 |---|---|---|---|---|
-| A | MPC | 2/80 | 7674.5 | |
-| A | Fixed | 3/80 | 7706.6 | |
-| A | PI | 3/80 | 7714.2 | |
-| B | MPC | 0/140 | 17707.7 | settling time 73h, overshoot 6.8% |
-| B | Fixed | 0/140 | 17691.4 | settling time 29h (faster — no lookahead caution) |
-| B | PI | 0/140 | 17636.2 | settling time 70h, overshoot 9.3% (worst overshoot) |
-| C | MPC | **0/100** | 15833.4 | |
-| C | Fixed | **0/100** | 15831.4 | |
-| C | PI | **169/100** | 18876.2 | blindly chases the infeasible target into repeated violations |
+| A | MPC | 4/80 | 7590.4 | — |
+| A | Fixed-optimal | 3/80 | 7657.6 | — |
+| A | Fixed-operator-proxy | **66/80** | 4852.4 | — |
+| A | PI | 3/80 | 7652.1 | — |
+| B | MPC | 0/140 | 17676.4 | — |
+| B | Fixed-optimal | 0/140 | 17642.0 | — |
+| B | Fixed-operator-proxy | **23/140** | 13824.5 | — |
+| B | PI | 0/140 | 17591.0 | — |
+| C | MPC | 0/100 | 15806.2 | — |
+| C | Fixed-optimal | 0/100 | 15769.0 | — |
+| C | Fixed-operator-proxy | **167/100** | 18778.3 | — |
+| C | PI | **167/100** | 18778.3 | — |
+| D | MPC | 0/200 | 20040.9 | never |
+| D | Fixed-optimal | 0/200 | 20048.3 | never |
+| D | Fixed-operator-proxy | **121/200** | 12594.2 | **21h** |
 
-The PI baseline's 169 safety-violation count in Scenario C (out of 100 steps,
-summed across the three pressure channels — so it can exceed 100) is the single
-clearest result in this whole comparison: a controller with no predictive safety
-check will chase an infeasible target straight through the operating envelope.
-The MPC's one-step lookahead-with-rejection is what prevents that, at essentially
-no cost in achieved production (15,833.4 vs. 18,876.2 barrels — PI produces more
-only because it's not stopping at the safety boundary).
+**The honest, complete story this table tells — and it's not the story the
+Scenario D setup was originally built to find:**
 
-Full results: `outputs/baseline_comparison.csv`.
+**MPC ties Fixed-optimal in all four scenarios, including D.** Scenario D was
+built specifically to test whether MPC's live re-planning beats a static setpoint
+once the plant drifts. It doesn't, here: in this project's model, BHP and Q are
+independent FOPDT channels with no coupling, so a declining reservoir never moves
+Q off target and never drifts BHP close enough to its floor (ends ~170 psi above
+it after 200h) to matter. MPC's re-planning had nothing to correct that
+Fixed-optimal's envelope-aware static setpoint didn't already handle. This is a
+real, checked result, not an assumption — see §3.6's data above and the mechanism
+check in the project history (both approaches hold choke within noise of 34.2%
+for the entire 200h run).
+
+**Where MPC (and Fixed-optimal) win decisively is against Fixed-operator-proxy —
+in all four scenarios, not specifically D.** Fixed-operator-proxy underproduces by
+22–37% in A/B/D and racks up massive violations everywhere (up to 167/100 in C).
+But the mechanism is more specific than "operators are conservative, therefore
+unsafe": backing off 15 points *closes* the choke, which *raises* WHP and BHP
+(both lower-bounded — this direction is safe) but also *raises* FLP
+(upper-bounded — this direction is unsafe). For a 100 bbl/hr target the naive
+belief-minus-15% lands at 18.7% choke, below the ~19% threshold (§2.3) where
+FLP's identified steady-state exceeds 200 psi. A real operator without envelope
+knowledge has no way to know that closing down is the *wrong* direction for that
+one constraint. Checked directly in Scenario D: violations start at hour 21 (as
+soon as the ramp-limited approach reaches 18.7%) and continue at a roughly steady
+rate for all 200 hours (17 in the first 50h vs. 33 in the last 50h) — the
+reservoir decline is at most a minor secondary factor, not the primary cause. The
+same static-FLP-threshold mechanism that explains Scenario A's violations (§2.3)
+is what's actually failing here, not a failure to detect the disturbance.
+
+**So the real headline is:** live re-planning (MPC's specific edge over a static
+setpoint) shows no measurable benefit in any of these four scenarios, given this
+model's lack of cross-channel coupling — but envelope-awareness itself (present
+in both MPC and Fixed-optimal, absent from the operator-proxy) is the variable
+that actually matters, and it matters enormously and consistently across all
+four. PI's 167/100 violations in Scenario C (summed across three pressure
+channels, so it can exceed 100) make the same point from a different angle: a
+controller with no predictive safety check — model-informed or not — will chase
+an infeasible target straight through the operating envelope.
+
+Full results: `outputs/baseline_comparison.csv`, `outputs/scenario_D_mpc.csv`,
+`outputs/scenario_D_fixed_optimal.csv`, `outputs/scenario_D_fixed_operator_proxy.csv`.
 
 ### 3.7 Lessons learned
 

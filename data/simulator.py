@@ -231,19 +231,27 @@ class Simulator:
     Read them via read_monitored().
     """
 
-    def __init__(self, initial_choke=0.0, seed=None):
+    def __init__(self, initial_choke=0.0, seed=None, params=None):
+        """params defaults to the shared, calibrated data.simulator.PARAMS -- pass a
+        private (e.g. copy.deepcopy'd) dict instead to let one instance's plant drift
+        independently, such as a slowly declining reservoir (see scenario_d.py). The
+        dict is stored by reference and read fresh every step(), so mutating it
+        between calls (e.g. params["BHP"]["A"] -= 0.5 once per hour) changes the
+        plant's own future behavior without touching any other Simulator instance.
+        """
+        self._params = params if params is not None else PARAMS
         self._rng = np.random.default_rng(seed)
         self.reset(initial_choke)
 
     def reset(self, initial_choke=0.0):
         u0 = float(np.clip(initial_choke, 0.0, 100.0))
         self._u_history = [u0]
-        self._true_state = {ch: steady_state(ch, u0) for ch in PARAMS}
+        self._true_state = {ch: steady_state_from_params(p, u0) for ch, p in self._params.items()}
         return self._read()
 
     def _read(self):
         return tuple(
-            self._true_state[ch] + self._rng.normal(0.0, PARAMS[ch]["noise_std"])
+            self._true_state[ch] + self._rng.normal(0.0, self._params[ch]["noise_std"])
             for ch in ("Q", "WHP", "FLP", "BHP")
         )
 
@@ -252,17 +260,17 @@ class Simulator:
         so kept out of step()'s return tuple and off the controller's radar entirely.
         Call after step(); noise is injected the same way as _read()'s."""
         return {
-            ch: self._true_state[ch] + self._rng.normal(0.0, PARAMS[ch]["noise_std"])
+            ch: self._true_state[ch] + self._rng.normal(0.0, self._params[ch]["noise_std"])
             for ch in ("WHT", "AP")
         }
 
     def step(self, choke_position):
         u = float(np.clip(choke_position, 0.0, 100.0))
         self._u_history.append(u)
-        for ch, p in PARAMS.items():
+        for ch, p in self._params.items():
             idx = max(0, len(self._u_history) - 1 - p["theta_steps"])
             u_eff = self._u_history[idx]
-            y_ss = steady_state(ch, u_eff)
+            y_ss = steady_state_from_params(p, u_eff)
             alpha = 1.0 - np.exp(-TS_HOURS / p["tau"])  # exact ZOH, see _simulate_fopdt
             self._true_state[ch] = self._true_state[ch] + alpha * (y_ss - self._true_state[ch])
         return self._read()

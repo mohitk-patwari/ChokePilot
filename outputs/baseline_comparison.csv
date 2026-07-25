@@ -1,10 +1,13 @@
 scenario,approach,hours,total_barrels,safety_violations,ramp_violations,rise_time_hr,settling_time_hr,overshoot_bbl_hr,overshoot_pct_of_step,steady_state_offset_bbl_hr
 A_startup_to_target,MPC,80,7590.368907795325,4,0,,,,,
-A_startup_to_target,Fixed,80,7657.554082121481,3,0,,,,,
+A_startup_to_target,Fixed-optimal,80,7657.554082121481,3,0,,,,,
+A_startup_to_target,Fixed-operator-proxy,80,4852.402727902076,66,0,,,,,
 A_startup_to_target,PI,80,7652.129988976165,3,0,,,,,
 B_target_tracking,MPC,140,17676.40955980031,0,0,11.0,73.0,3.416658241670177,6.833316483340354,0.5657779781743102
-B_target_tracking,Fixed,140,17642.018959173904,0,0,14.0,29.0,2.3852339116038763,4.770467823207753,-0.2926925554268678
+B_target_tracking,Fixed-optimal,140,17642.018959173904,0,0,14.0,29.0,2.3852339116038763,4.770467823207753,-0.2926925554268678
+B_target_tracking,Fixed-operator-proxy,140,13824.52701933634,23,0,,,0.0,0.0,-20.315277734767903
 B_target_tracking,PI,140,17590.970586146483,0,0,14.0,69.0,2.64003419612132,5.28006839224264,0.1520570084209112
 C_infeasible_target,MPC,100,15806.157400692124,0,0,,,,,
-C_infeasible_target,Fixed,100,15768.969938866689,0,0,,,,,
+C_infeasible_target,Fixed-optimal,100,15768.969938866689,0,0,,,,,
+C_infeasible_target,Fixed-operator-proxy,100,18778.30708996328,167,0,,,,,
 C_infeasible_target,PI,100,18778.30708996328,167,0,,,,,

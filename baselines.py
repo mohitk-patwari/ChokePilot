@@ -1,21 +1,30 @@
 """
-Two baselines to compare against controller.py's brute-force MPC, run over the same
-three scenarios, same identified model, same safety limits, same simulator seeds as
+Baselines to compare against controller.py's brute-force MPC, run over the same
+scenarios, same identified model, same safety limits, same simulator seeds as
 scenarios.py -- so outputs/baseline_comparison.csv is an apples-to-apples comparison.
 
-  1. Fixed choke -- computed once per target from the identified model's own Q(u)
+  1. Fixed-optimal -- computed once per target from the identified model's own Q(u)
      steady-state map, capped so its own steady-state pressure predictions stay inside
-     the safety envelope, then held. The "operator conservatism" pain point (CLAUDE.md
-     #1/#2): a choke set once from experience/a model, then left alone rather than
-     continuously corrected.
-  2. PI on oil rate -- velocity-form PI (Delta-u = Kp*(e_k-e_{k-1}) + Ki*Ts*e_k), IMC-
+     the safety envelope, then held. Still model-informed and envelope-aware -- this
+     is what a good engineer with the identification pipeline would set, not what a
+     real operator without it would. Models the "set once, left alone" half of pain
+     point #2 (CLAUDE.md), but NOT pain point #1's conservatism, since it still
+     optimizes against the real envelope.
+  2. Fixed-operator-proxy -- NO model, NO envelope knowledge at all: a naive linear
+     read of choke-vs-oil-rate straight off the raw reference CSV (the only "real"
+     data an operator without this pipeline would have), then backed off ~15
+     percentage points from wherever that naive line says the target is met. Models
+     pain point #1 directly: "operators baby the choke conservatively (fear of sand/
+     formation damage), leaving real production capacity unused" -- this baseline
+     always under-produces relative to target by construction, on purpose.
+  3. PI on oil rate -- velocity-form PI (Delta-u = Kp*(e_k-e_{k-1}) + Ki*Ts*e_k), IMC-
      tuned from the identified Q model's own tau/theta/gain. The +-5%/interval ramp
      clamp on Delta-u doubles as its anti-windup -- there's no separate integral state
      to wind up beyond what's already expressed through the clamped Delta-u. Blind to
      WHP/FLP/BHP -- that blindness is the point of the comparison, since the MPC is
-     safety-aware by construction and these two baselines are not.
+     safety-aware by construction and these baselines are not.
 
-Both share controller.py's hard +-5%/interval actuator ramp limit; neither replans
+All three share controller.py's hard +-5%/interval actuator ramp limit; none replans
 with a lookahead the way the MPC does.
 """
 
@@ -57,7 +66,23 @@ def fixed_choke_setpoint(model, correction, tightened_limits, target_q):
     return 0.0
 
 
-def run_fixed_baseline(name, initial_choke, target_fn, hours, model, correction, tightened_limits, sim_seed):
+def operator_proxy_setpoint(csv_path, target_q, backoff_pct=15.0):
+    """A real operator's mental model, not ours: a naive straight-line read of
+    choke-vs-oil-rate off the raw reference CSV (no FOPDT fit, no steady-state curve,
+    no pressure channels looked at, no envelope knowledge whatsoever -- literally the
+    plot a field engineer might eyeball), then a conservative backoff. Models pain
+    point #1 directly: operators baby the choke, leaving real production capacity on
+    the table. Uninformed and un-optimized on purpose -- do not sharpen this."""
+    df = pd.read_csv(csv_path)
+    slope, intercept = np.polyfit(df["Choke_pct"], df["OilRate_bbl_hr"], 1)
+    u_believed = (target_q - intercept) / slope
+    return float(np.clip(u_believed - backoff_pct, CHOKE_MIN, CHOKE_MAX))
+
+
+def run_fixed_baseline(name, initial_choke, target_fn, hours, setpoint_fn, sim_seed, tag=""):
+    """setpoint_fn(target) computes the (held, ramp-limited) choke for a given
+    target -- the only thing that differs between Fixed-optimal (fixed_choke_setpoint)
+    and Fixed-operator-proxy (operator_proxy_setpoint) is which function is passed."""
     sim = Simulator(initial_choke=initial_choke, seed=sim_seed)
     choke = initial_choke
     q, whp, flp, bhp = sim._read()
@@ -66,13 +91,13 @@ def run_fixed_baseline(name, initial_choke, target_fn, hours, model, correction,
     for t in range(hours):
         target = target_fn(t)
         if target != prev_target:
-            setpoint = fixed_choke_setpoint(model, correction, tightened_limits, target)
+            setpoint = setpoint_fn(target)
             prev_target = target
         choke = float(np.clip(choke + np.clip(setpoint - choke, -MAX_RAMP_PCT, MAX_RAMP_PCT), CHOKE_MIN, CHOKE_MAX))
         q, whp, flp, bhp = sim.step(choke)
         rows.append((t, target, q, whp, flp, bhp, choke))
     df = pd.DataFrame(rows, columns=["Time_hr", "Target_Q", "Q", "WHP", "FLP", "BHP", "Choke"])
-    df.to_csv(OUTPUT_DIR / f"baseline_fixed_{name}.csv", index=False)
+    df.to_csv(OUTPUT_DIR / f"baseline_fixed{tag}_{name}.csv", index=False)
     return df
 
 
@@ -155,23 +180,26 @@ def summarize(name, approach, df, limits, step_metrics=None):
     return row
 
 
-_APPROACH_COLORS = {"MPC": "tab:blue", "Fixed": "tab:orange", "PI": "tab:green"}
+_APPROACH_COLORS = {
+    "MPC": "tab:blue", "Fixed-optimal": "tab:orange",
+    "Fixed-operator-proxy": "tab:red", "PI": "tab:green",
+}
 _SCENARIO_LABELS = {"A_startup_to_target": "A", "B_target_tracking": "B", "C_infeasible_target": "C"}
 
 
 def plot_comparison(df):
-    """Grouped bar chart, MPC vs. Fixed vs. PI: safety violations (log-scale -- PI's
+    """Grouped bar chart across all approaches: safety violations (log-scale -- PI's
     Scenario C count dwarfs everything else) and total barrels produced, per scenario.
     The single-figure story this project's results boil down to."""
     scenarios = list(_SCENARIO_LABELS)
-    approaches = list(_APPROACH_COLORS)
+    approaches = [a for a in _APPROACH_COLORS if a in set(df.approach)]
     x = np.arange(len(scenarios))
-    width = 0.25
+    width = 0.8 / len(approaches)
 
-    fig, (ax_viol, ax_bbl) = plt.subplots(1, 2, figsize=(11, 4.5))
+    fig, (ax_viol, ax_bbl) = plt.subplots(1, 2, figsize=(12, 4.5))
     for i, approach in enumerate(approaches):
         sub = df[df.approach == approach].set_index("scenario").loc[scenarios]
-        offset = (i - 1) * width
+        offset = (i - (len(approaches) - 1) / 2) * width
         color = _APPROACH_COLORS[approach]
         ax_viol.bar(x + offset, sub.safety_violations.clip(lower=0.1), width, color=color, label=approach)
         ax_bbl.bar(x + offset, sub.total_barrels, width, color=color, label=approach)
@@ -187,7 +215,7 @@ def plot_comparison(df):
         ax.set_xlabel("Scenario")
         ax.legend(fontsize=8)
 
-    fig.suptitle("Baseline comparison: brute-force MPC vs. Fixed choke vs. PI")
+    fig.suptitle("Baseline comparison: MPC vs. Fixed-optimal vs. Fixed-operator-proxy vs. PI")
     fig.tight_layout()
     path = OUTPUT_DIR / "baseline_comparison.png"
     fig.savefig(path, dpi=130)
@@ -225,10 +253,18 @@ def main():
 
         df_mpc = run_scenario(name, u0, target_fn, hours, model, limits, sim_seed=seed,
                                correction=correction, save=False)
-        df_fixed = run_fixed_baseline(name, u0, target_fn, hours, model, correction, tightened, sim_seed=seed)
+        df_fixed = run_fixed_baseline(
+            name, u0, target_fn, hours,
+            setpoint_fn=lambda target: fixed_choke_setpoint(model, correction, tightened, target),
+            sim_seed=seed)
+        df_operator = run_fixed_baseline(
+            name, u0, target_fn, hours,
+            setpoint_fn=lambda target: operator_proxy_setpoint(CSV_PATH, target),
+            sim_seed=seed, tag="_operator")
         df_pi = run_pi_baseline(name, u0, target_fn, hours, sim_seed=seed, Kp=Kp, Ki=Ki)
 
-        for approach, df in [("MPC", df_mpc), ("Fixed", df_fixed), ("PI", df_pi)]:
+        for approach, df in [("MPC", df_mpc), ("Fixed-optimal", df_fixed),
+                             ("Fixed-operator-proxy", df_operator), ("PI", df_pi)]:
             metrics = step_response_metrics(df, **step_kwargs) if step_kwargs else None
             rows.append(summarize(name, approach, df, limits, metrics))
         print()

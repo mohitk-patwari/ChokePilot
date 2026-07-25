@@ -208,16 +208,45 @@ large enough to flip which candidates are feasible step to step, which a
 cost-ranking fix within whichever set is feasible can't solve. A larger
 noise_margin_sigma would likely help; not tried.
 
+Scenario D - Disturbance Rejection added (scenario_d.py): BHP's identified
+steady-state offset drifts -0.5 psi/h for 200h (reservoir decline, deliberate
+relaxation of the brief's "no changing reservoir properties" simplification)
+at a constant 100 bbl/hr target. Simulator gained a params= constructor arg
+(defaults to the shared global PARAMS; pass a private copy.deepcopy to drift
+one instance's plant without touching any other scenario) to support this.
+
+Second Fixed baseline added: Fixed-operator-proxy (baselines.py) -- no model,
+no envelope knowledge, a naive linear read of choke-vs-oil-rate off the raw
+reference CSV, backed off 15 points. Models pain point #1 directly. Renamed
+the original Fixed baseline to Fixed-optimal for clarity (it's still
+model-informed and envelope-aware, just set once).
+
+CORRECTED FINDING (checked against real data before writing, not assumed):
+Scenario D was built to show MPC beating a static setpoint via live
+re-planning. It doesn't -- MPC ties Fixed-optimal in ALL FOUR scenarios
+(A/B/C/D), because BHP and Q are independent, uncoupled FOPDT channels in
+this model, so the reservoir decline never gives MPC's re-planning anything
+to correct that Fixed-optimal's envelope-aware static setpoint didn't already
+handle. The real, consistent, four-for-four win is MPC/Fixed-optimal (both
+envelope-aware) vs. Fixed-operator-proxy (not) -- e.g. D: 0/200 vs 121/200
+violations, 20048 vs 12594 barrels. Mechanism: backing off 15% closes the
+choke, which is safe for WHP/BHP (lower-bounded) but UNSAFE for FLP
+(upper-bounded) -- the same static ~19%-choke FLP-ceiling mechanism as
+Scenario A (see Known Limitation above), confirmed directly in D (violations
+start at hour 21, steady rate for all 200h -- the disturbance is a minor
+factor at most, not the cause). docs/report.md Sec 3.6 rewritten with this.
+
 STALE, not yet refreshed against recent fixes: docs/presentation.md (still
 references the old 24h dwell and 34.4% start) and README.md (still says
-"treats it as a black box" and quotes pre-DWELL_HOURS-fix numbers) -- neither
-was part of any pass so far. docs/report.md Sections 1.2/3.2/3.3/3.6 are also
+"treats it as a black box" and quotes pre-DWELL_HOURS-fix numbers, and
+doesn't mention Scenario D or the operator-proxy baseline at all) -- neither
+was part of any pass so far. docs/report.md Sections 1.2/3.2/3.3 are also
 stale (predate the one-sample-lag and/or move-suppression fixes); flagged
-inline there. Sections 2.3/3.1/3.4/3.7 are current (2.3/3.1 rewritten from
-scratch after finding an actual error, not just a numbers refresh -- see
-Known Limitation above).
+inline there. Sections 2.3/3.1/3.4/3.6/3.7 are current.
 
-TODO: refresh docs/presentation.md and README.md against the current state;
-resync docs/report.md's remaining stale sections (1.2/3.2/3.3/3.6); investigate
-whether a larger noise_margin_sigma resolves Scenario C's remaining chatter;
-final polish pass.
+TODO: refresh docs/presentation.md and README.md against the current state
+(including Scenario D / operator-proxy); resync docs/report.md's remaining
+stale sections (1.2/3.2/3.3); investigate whether a larger noise_margin_sigma
+resolves Scenario C's remaining chatter; investigate whether a scenario with
+real cross-channel coupling would let Scenario D actually differentiate MPC
+from Fixed-optimal; final polish pass.
