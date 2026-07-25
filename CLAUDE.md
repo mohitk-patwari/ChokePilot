@@ -84,7 +84,13 @@ implementation, results for Scenarios A/B/C with plots (target vs actual oil rat
 WHP, FLP, BHP, choke position), architecture/report doc, presentation slides.
 
 ## Current build status (update this section as work progresses)
-DONE: simulator, identify.py, controller.py, scenarios.py, initial scenario runs.
-TODO: apply Scenario A 15% start fix; verify decision-rationale logging exists;
-add hybrid physics+learned-correction layer (novelty angle); write architecture
-doc; write presentation slides; final polish pass.
+DONE: simulator, identify.py, controller.py, scenarios.py, initial scenario runs;
+Scenario A 15% start fix (violations 21/80 -> 3/80); verified decision-rationale
+logging is real (per-step "Why" field, both the normal and safety-fallback
+branches, confirmed against actual scenario CSVs); hybrid physics+learned-
+correction layer added to identify.py (degree-1 polynomial-in-choke correction
+on the FOPDT residual, wired into controller.py's prediction). Validated on a
+held-out step test, kept per-channel only where it beat physics-only RMSE:
+Q 3.50->3.27, WHP 4.30->4.17, BHP 26.95->25.67 (all used); FLP 2.31->2.34
+(skipped, didn't generalize -- physics-only fit was already tight there).
+TODO: write architecture doc; write presentation slides; final polish pass.

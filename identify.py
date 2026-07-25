@@ -70,6 +70,71 @@ def identify_model(df):
     return model
 
 
+def steady_state_with_correction(p, u, correction_coefs):
+    """Physics steady-state map plus a small additive correction(u). correction_coefs
+    is None for "no correction" (plain physics)."""
+    y = p["A"] + p["B"] * u / (u + p["uh"])
+    if correction_coefs is not None:
+        y += float(np.polyval(correction_coefs, u))
+    return max(0.0, y) if p["clip_nonneg"] else y
+
+
+def _simulate_with_correction(u, y0, p, correction_coefs, ts):
+    u_delayed = np.concatenate([np.full(p["theta_steps"], u[0]), u])[: len(u)]
+    y_ss = np.array([steady_state_with_correction(p, uu, correction_coefs) for uu in u_delayed])
+    sim = np.empty(len(u))
+    sim[0] = y0
+    alpha = ts / p["tau"]
+    for k in range(len(u) - 1):
+        sim[k + 1] = sim[k] + alpha * (y_ss[k] - sim[k])
+    return sim
+
+
+def fit_residual_correction(df, model, degree=1):
+    """Hybrid physics+ML layer: fit a small (degree-1 by default -- "linear or
+    shallow", per spec) polynomial-in-choke correction on the residual the physics
+    FOPDT model leaves on a step test, per channel. This is a bias-correction on the
+    steady-state map, not a replacement for the physics dynamics -- deliberately tiny
+    (degree+1 coefficients) so it corrects systematic curve-shape mismatch without
+    having enough freedom to just memorize the training step test.
+    """
+    u = df["Choke_pct"].to_numpy(dtype=float)
+    correction = {}
+    for ch, p in model.items():
+        y = df[ch].to_numpy(dtype=float)
+        physics_pred = _simulate_fopdt(u, y[0], p["A"], p["B"], p["uh"], p["tau"],
+                                        p["theta_steps"], TS_HOURS, clip_nonneg=p["clip_nonneg"])
+        resid = y - physics_pred
+        correction[ch] = np.polyfit(u, resid, degree)
+    return correction
+
+
+def evaluate_correction(model, correction, holdout_df):
+    """Physics-only vs physics+correction RMSE on a held-out step test (not the data
+    the correction was fit on) -- the honest way to check the correction generalizes
+    rather than just fitting noise in the training run."""
+    u = holdout_df["Choke_pct"].to_numpy(dtype=float)
+    report = {}
+    for ch, p in model.items():
+        y = holdout_df[ch].to_numpy(dtype=float)
+        physics_only = _simulate_fopdt(u, y[0], p["A"], p["B"], p["uh"], p["tau"],
+                                        p["theta_steps"], TS_HOURS, clip_nonneg=p["clip_nonneg"])
+        corrected = _simulate_with_correction(u, y[0], p, correction[ch], TS_HOURS)
+        rmse_before = float(np.sqrt(np.mean((physics_only - y) ** 2)))
+        rmse_after = float(np.sqrt(np.mean((corrected - y) ** 2)))
+        report[ch] = (rmse_before, rmse_after)
+    return report
+
+
+def select_beneficial_corrections(correction, report):
+    """Only keep the learned correction for channels where it actually reduced
+    held-out RMSE; channels where it didn't generalize fall back to physics-only
+    (None). A correction that doesn't demonstrably help has no business being wired
+    into the controller just because it exists."""
+    return {ch: (coefs if report[ch][1] < report[ch][0] else None)
+            for ch, coefs in correction.items()}
+
+
 def demo():
     """Self-check: identify a model from a fresh step test and confirm it reproduces
     that same step test (the model has to explain the data it was fit to)."""
@@ -95,5 +160,14 @@ if __name__ == "__main__":
     for ch, p in model.items():
         print(f"{ch}: A={p['A']:.2f} B={p['B']:.2f} uh={p['uh']:.1f} tau={p['tau']:.2f}h "
               f"theta={p['theta_steps']}h noise_std={p['noise_std']:.2f}")
+    print()
+
+    correction = fit_residual_correction(df, model)
+    holdout_df = run_step_test(seed=99)  # different noise draw, same design -- generalization check
+    report = evaluate_correction(model, correction, holdout_df)
+    print("physics-only vs physics+learned-correction RMSE on a held-out step test:")
+    for ch, (before, after) in report.items():
+        verdict = "helps" if after < before else "does NOT help"
+        print(f"  {ch}: {before:.3f} -> {after:.3f}  ({verdict})")
     print()
     demo()

@@ -13,14 +13,16 @@ the safety limits; the controller should settle at the maximum safe rate instead
 import sys
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
 sys.path.insert(0, str(Path(__file__).parent / "data"))
-from simulator import Simulator, TS_HOURS  # noqa: E402
+from simulator import Simulator  # noqa: E402
 
-from identify import run_step_test, identify_model  # noqa: E402
+from identify import (  # noqa: E402
+    run_step_test, identify_model, fit_residual_correction,
+    evaluate_correction, select_beneficial_corrections,
+)
 from controller import MPCController, safety_limits_from_reference  # noqa: E402
 
 OUTPUT_DIR = Path(__file__).parent / "outputs"
@@ -28,9 +30,9 @@ OUTPUT_DIR.mkdir(exist_ok=True)
 CSV_PATH = Path(__file__).parent / "data" / "Autonomous_Choke_Control_Simulated_Dataset.csv"
 
 
-def run_scenario(name, initial_choke, target_fn, hours, model, limits, sim_seed):
+def run_scenario(name, initial_choke, target_fn, hours, model, limits, sim_seed, correction=None):
     sim = Simulator(initial_choke=initial_choke, seed=sim_seed)
-    ctrl = MPCController(model, limits)
+    ctrl = MPCController(model, limits, correction=correction)
     choke = initial_choke
     q, whp, flp, bhp = sim._read()
 
@@ -95,6 +97,18 @@ def main():
     print("safety limits (placeholder, derived from reference data + 20% margin):", limits)
     print(f"model tau (h): {{ {', '.join(f'{ch}: {p['tau']:.2f}' for ch, p in model.items())} }}")
 
+    # Hybrid physics+ML: fit a small residual correction on top of the physics model,
+    # then only keep it per-channel where it demonstrably reduces held-out RMSE.
+    raw_correction = fit_residual_correction(step_df, model)
+    holdout_df = run_step_test(seed=99)
+    correction_report = evaluate_correction(model, raw_correction, holdout_df)
+    correction = select_beneficial_corrections(raw_correction, correction_report)
+    print("learned correction, held-out RMSE (physics-only -> physics+correction):")
+    for ch, (before, after) in correction_report.items():
+        used = "used" if correction[ch] is not None else "SKIPPED (didn't generalize)"
+        print(f"  {ch}: {before:.3f} -> {after:.3f}  [{used}]")
+    print()
+
     scenarios = [
         # 15% not 0%: the calibrated model/limits only have real support in the
         # reference data's 30-65% tested band (see CLAUDE.md Known Limitation) --
@@ -112,7 +126,7 @@ def main():
     }
 
     for name, u0, target_fn, hours, seed in scenarios:
-        df = run_scenario(name, u0, target_fn, hours, model, limits, sim_seed=seed)
+        df = run_scenario(name, u0, target_fn, hours, model, limits, sim_seed=seed, correction=correction)
         plot_scenario(name, titles[name], df, limits)
         check_constraints(name, df, limits)
         print(f"[{name}] final: target={df.Target_Q.iloc[-1]:.1f} actual={df.Q.iloc[-1]:.1f} "

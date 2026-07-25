@@ -41,14 +41,20 @@ def safety_limits_from_reference(csv_path, margin_frac=0.20, round_to=5.0):
     return limits
 
 
-def _steady_state(p, u):
+def _steady_state(p, u, correction_coefs=None):
+    """Physics steady-state map, optionally plus a small learned correction(u) --
+    see identify.py's fit_residual_correction. correction_coefs is None wherever
+    that correction didn't demonstrably reduce held-out error (physics-only then)."""
     y = p["A"] + p["B"] * u / (u + p["uh"])
+    if correction_coefs is not None:
+        y += float(np.polyval(correction_coefs, u))
     return max(0.0, y) if p["clip_nonneg"] else y
 
 
-def _predict_horizon(model, state, u_history, new_u, horizon, ts):
+def _predict_horizon(model, state, u_history, new_u, horizon, ts, correction=None):
     """Simulate `horizon` steps ahead: apply new_u this interval, then hold it there.
     Returns {channel: array of length horizon} of predicted values."""
+    correction = correction or {}
     u_seq = u_history + [new_u] * horizon
     base_len = len(u_history)
     preds = {ch: np.empty(horizon) for ch in model}
@@ -56,7 +62,7 @@ def _predict_horizon(model, state, u_history, new_u, horizon, ts):
     for k in range(horizon):
         for ch, p in model.items():
             idx = max(0, base_len + k - p["theta_steps"])
-            y_ss = _steady_state(p, u_seq[idx])
+            y_ss = _steady_state(p, u_seq[idx], correction.get(ch))
             alpha = ts / p["tau"]
             cur[ch] = cur[ch] + alpha * (y_ss - cur[ch])
             preds[ch][k] = cur[ch]
@@ -67,8 +73,13 @@ class MPCController:
     """One-sentence-explainable brute-force MPC: 11 fixed candidate moves, simulated
     over a lookahead horizon, filtered by safety, chosen by closeness to target."""
 
-    def __init__(self, model, limits, ts_hours=1.0, horizon=None, noise_margin_sigma=3.0):
+    def __init__(self, model, limits, ts_hours=1.0, horizon=None, noise_margin_sigma=3.0,
+                 correction=None):
         self.model = model
+        # Learned residual correction per channel (identify.py's fit_residual_correction,
+        # filtered by select_beneficial_corrections) -- None per-channel where it didn't
+        # demonstrably help on held-out data. Optional: physics-only if not supplied.
+        self.correction = correction or {}
         self.true_limits = limits  # {"WHP": (lo, hi), "FLP": (lo, hi), "BHP": (lo, hi)}
         # Predictions are noise-free, but real readings carry measurement noise, so
         # riding the true limit exactly would let real noise dip past it. Back off
@@ -96,7 +107,8 @@ class MPCController:
         results = []
         for delta in CANDIDATE_DELTAS:
             new_u = float(np.clip(current_choke + delta, CHOKE_MIN, CHOKE_MAX))
-            preds = _predict_horizon(self.model, state, self.u_history, new_u, self.horizon, self.ts)
+            preds = _predict_horizon(self.model, state, self.u_history, new_u, self.horizon,
+                                      self.ts, self.correction)
             violation = 0.0
             for ch in ("WHP", "FLP", "BHP"):
                 lo, hi = self.limits[ch]
