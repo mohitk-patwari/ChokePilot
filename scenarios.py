@@ -58,7 +58,14 @@ def solve_choke_for_q(model, target_q):
     return max(0.0, min(100.0, u))
 
 
-def run_scenario(name, initial_choke, target_fn, hours, model, limits, sim_seed, correction=None):
+def run_scenario(name, initial_choke, target_fn, hours, model, limits, sim_seed, correction=None,
+                  save=True):
+    """save=True writes outputs/scenario_{name}.csv -- the shipped, "official" result
+    for that scenario. Callers that run this scenario many times with different seeds
+    or models for their own purposes (seed_sweep.py's 30-seed sweep, baselines.py's
+    MPC comparison row, tests/) must pass save=False, or their run silently overwrites
+    the shipped CSV with whatever they last happened to run -- exactly what caused
+    outputs/scenario_C_infeasible_target.csv to not match scenarios.py's own output."""
     sim = Simulator(initial_choke=initial_choke, seed=sim_seed)
     ctrl = MPCController(model, limits, correction=correction)
     choke = initial_choke
@@ -77,7 +84,8 @@ def run_scenario(name, initial_choke, target_fn, hours, model, limits, sim_seed,
 
     df = pd.DataFrame(rows, columns=["Time_hr", "Target_Q", "Q", "WHP", "FLP", "BHP",
                                       "WHT", "AP", "Choke", "Why", "Fallback"])
-    df.to_csv(OUTPUT_DIR / f"scenario_{name}.csv", index=False)
+    if save:
+        df.to_csv(OUTPUT_DIR / f"scenario_{name}.csv", index=False)
     return df
 
 

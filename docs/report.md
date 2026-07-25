@@ -5,6 +5,19 @@ actually executing `identify.py`, `verify_identification.py`, `scenarios.py`,
 `seed_sweep.py`, and `baselines.py` against the current code — none are carried
 over from an earlier draft.*
 
+**STALE, flagged not silently fixed:** §1.2's τ/θ table and §3.2/3.3/3.6's exact
+percentages predate two fixes that changed the underlying numbers slightly
+(their headline conclusions are unaffected, but the specific figures are not
+current): (1) a one-sample lag between `_simulate_fopdt` and `Simulator.step()`
+that biased every identified τ/θ (θ now matches true θ exactly; τ error
+dropped further, e.g. Q's "unexplained" ~19% bias resolved to ~3%), and (2) a
+move-suppression fix to `MPCController.decide()` (§3.4) that changed Scenario
+A/B/C's exact trajectories. §2.3, §3.1, §3.4, and §3.7's Lessons Learned are
+current as of this revision — §2.3/3.1 were rewritten from scratch after
+finding an actual error (Scenario A's violations were misattributed to
+"extrapolation," not the deterministic FLP-ceiling cause identified here). A
+full re-sync of §1.2 and §3.2/3.3/3.6 against both fixes remains a follow-up.
+
 ## 0. Why this exists
 
 Five recurring pain points show up across upstream operations literature and
@@ -217,24 +230,53 @@ let real sensor noise breach it in practice. So each limit is backed off by 3σ 
 that channel's identified `noise_std` before the controller ever sees it — a
 standard robust-MPC constraint-tightening margin.
 
-### 2.3 The extrapolation problem is the simulator's, not the controller's
+### 2.3 Scenario A's violations are a deterministic initial-condition property, not an extrapolation artifact
 
-An earlier draft claimed Scenario A's 15% starting choke was "inside the model's
-supported range." **That claim was false** — the reference CSV's tested band is
-30–65%, and 15% is below it. Moving Scenario A's start from 0% to 15% reduced how
-far into extrapolated territory the startup transient reaches; it did not
-eliminate the extrapolation.
+Two earlier drafts of this section were wrong in different ways. The first
+claimed Scenario A's 15% starting choke was "inside the model's supported
+range" — false, since the reference CSV's tested band is 30–65% and 15% is
+below it. The second corrected that but still blamed the resulting violations
+on "extrapolation uncertainty" — implying the model's behavior below 30% choke
+is untrustworthy guesswork, so the violations might or might not reflect
+reality. **That framing doesn't survive checking the model's own numbers.**
 
-This is worth stating precisely: **extrapolation uncertainty is a property of the
-substitute simulator's calibration** (only 5 discrete choke levels were ever
-observed, all ≥30%; see §1.1), not something the controller can detect or correct
-for. The controller has no way to know its own prediction model is running on
-unvalidated territory — it simply predicts using the steady-state curve it has,
-wherever it's asked to evaluate it. Any confidence in behavior below 30% choke is
-inherited entirely from the fitted curve's shape (monotonic and bounded by
-construction) staying "physically sane" under extrapolation, not from evidence.
-Scenario A's residual violations, reported honestly across 30 seeds in §3.4,
-are the direct, expected consequence of this.
+Computing the identified FLP steady-state map directly (`steady_state_from_params`,
+the exact function `controller.py` predicts with) at low choke levels:
+
+| Choke | FLP steady-state | vs. 200 psi ceiling |
+|---|---|---|
+| 0% | 218.4 psi | exceeds |
+| 10% | 208.6 psi | exceeds |
+| 15% | 203.7 psi | exceeds |
+| 18–19% | crosses 200 psi | — |
+| 20% | 198.8 psi | clears (barely; still above the controller's tightened 197.3 psi margin) |
+| 21–22% | crosses the tightened margin | — |
+| 25%+ | 193.9 psi | clears with margin |
+
+**Scenario A starts at 15% choke, and `Simulator.reset()` initializes FLP at
+exactly that choke's steady state — 203.7 psi, already 3.7 psi over the true
+ceiling, before the controller has made a single decision.** This isn't a
+consequence of the model being unreliable outside its calibrated band; it's
+what the identified model's own steady-state curve says, taken at face value.
+With the ±5%/interval ramp limit, reaching even the *steady-state-safe* 20%
+choke takes one full interval, and reaching a choke whose steady state clears
+the controller's own tightened margin (~22%) takes two — and the controller
+cannot take a bigger step regardless of how urgently it wants to, because the
+ramp-rate limit is a hard constraint it has no authority to override. Add
+FLP's own dynamics (τ=7h, θ=1h dead time) on top, and the real reading lags
+even a fully corrected choke position by more than the ramp-limited approach
+alone would suggest.
+
+This reframes what "the model doesn't have real support below 30%" actually
+means for Scenario A: it's not that the violations are an artifact of guessed,
+untrustworthy numbers that might vanish with a better-calibrated model — it's
+that *this specific identified model*, trusted exactly as identified, places
+the starting point outside the safe envelope and the ramp-rate limit
+mathematically guarantees a multi-hour approach. A better calibration in the
+0–30% range could shift the exact numbers, but the qualitative outcome (start
+below the envelope + hard ramp limit = guaranteed early violations) would not
+change unless the recalibration also changed the *sign* of FLP's slope near
+15% choke, which nothing in the physics suggests it would.
 
 ### 2.4 One-sentence rationale per decision (pain point 5)
 
@@ -264,15 +306,25 @@ single run.
 
 - **Tracking:** trailing 10-hour mean (hours 70–79) of **99.26 bbl/hr** at a
   steady 34.0% choke.
-- **Safety, single-seed:** 2/80 constraint samples outside limits.
-- **Safety, honest (30-seed sweep, see §3.4):** every single seed shows at least
-  one violation (30/30), mean 2.67/80 steps, max 4/80. This is a stable,
-  deterministic consequence of starting inside extrapolated territory (§2.3), not
-  an artifact of one noise draw, and **unchanged by the identification fixes in
-  §1.2** — it's a property of the calibration's support region, not the
-  identification method.
+- **Safety, single-seed:** 4/80 constraint samples outside limits.
+- **Safety, honest (30-seed sweep, see §3.5):** every single seed shows at least
+  one violation (30/30), mean 2.67/80 steps, max 4/80.
+- **Why, precisely (see §2.3):** this is not an "extrapolation artifact" — it's
+  a deterministic consequence of the identified FLP steady-state curve exceeding
+  the 200 psi ceiling below ~19% choke, combined with the ±5%/interval ramp
+  limit. Scenario A starts at 15% (FLP initialized at its own steady state,
+  203.7 psi — already over) and the ramp limit caps how fast the choke can move
+  toward a safe region, regardless of the controller's predictions.
+- **New metric — time to enter the safe envelope:** the hour after which no
+  further violations occur. Single-seed: **4h**. Across the 30-seed sweep:
+  **mean 4.0h, range 3–5h** — a tight distribution driven almost entirely by
+  the ramp-rate arithmetic (15%→20% in 1 step, →25% in 2, plus FLP's own τ=7h/
+  θ=1h lag), not by noise. This tightness is itself evidence for the
+  deterministic explanation: an extrapolation-uncertainty artifact would be
+  expected to show more seed-to-seed spread than 3–5h.
 - **Ramp-rate:** 0/80 violations in every seed — the ±5%/interval constraint was
-  never the binding limit; the extrapolation-driven pressure transient was.
+  never breached; it's the *reason* the envelope takes several hours to reach,
+  not itself a violated constraint.
 
 ### 3.2 Scenario B — Target Tracking (34.2% choke start, 100→150 bbl/hr step at t=60h, 140h)
 
@@ -290,14 +342,53 @@ single run.
 - **Safety, single-seed:** 0/100. **30-seed sweep: 0/100 in all 30 seeds** — fully
   clean, an improvement over an earlier (pre-40h-dwell) run of this same sweep
   that showed a rare 1-violation residual in 2/30 seeds.
-- **Safety-fallback frequency:** 15.9% of steps (see §3.4) — still far higher than
+- **Safety-fallback frequency:** 15.9% of steps (see §3.5) — still far higher than
   A or B, because this scenario deliberately runs the choke near the edge of the
   tightened feasible envelope for its entire duration. Frequent fallback here is
   expected behavior, not a red flag; it dropped from an earlier 23.6% alongside
   the tighter identified model, consistent with the controller needing the
   least-bad fallback less often when its predictions are more accurate.
 
-### 3.4 Seed-sweep distribution (30 seeds per scenario, `seed_sweep.py`)
+### 3.4 Actuator activity: valve travel and move count
+
+`MPCController.decide()` originally picked the feasible candidate purely by
+predicted target error (`q_err`), with move size only a last-resort tie-break.
+Once near target, many candidates have `q_err` differences smaller than
+measurement noise, so the "closest" one was effectively a coin flip decided by
+noise — the valve chattered chasing error it can't actually predict. Fixed by
+adding a move-suppression term to both branches' cost:
+
+- Feasible branch: `cost = q_err + λ·|Δu|` (was: sort purely by `q_err`).
+- Safety-fallback branch: `cost = violation + λ·|Δu|` (was: sort purely by
+  `violation`) — added for the same reason; Scenario C spends 15.9–23% of its
+  steps in this branch (§3.5), so it chatters just as easily if left unweighted.
+
+`λ = 1.0` bbl/hr of predicted improvement required per %-point moved (a 1%
+move must be worth ≥1 bbl/hr; a 5% move must be worth ≥5 bbl/hr) — matching the
+target calibration exactly, not retuned to force a result.
+
+| Scenario | Moves | Total valve travel |
+|---|---|---|
+| A — Startup to Target | 5 / 80 | 16.0 %-pts |
+| B — Target Tracking | 7 / 140 | 29.0 %-pts |
+| C — Infeasible Target | 53 / 100 | 129.0 %-pts (was 154.0 before this fix) |
+
+**Honest result, not fully positive:** the fix works as intended for A and B —
+both settle and stay essentially still once near target (5 and 7 moves total,
+vs. constant hunting beforehand). **Scenario C is only partially improved**:
+total travel dropped 16% (154→129 %-pts) but move *count* is essentially
+unchanged (52→53). Root cause, confirmed by inspecting the trajectory directly:
+C isn't chattering from a noise-driven tie between similarly-good candidates —
+it's riding the tightened WHP floor (208.6 psi, true limit 205 + 3σ margin)
+with WHP readings noisy enough (σ≈1.2 psi, observed swinging 207–213 psi) to
+repeatedly cross that threshold and flip which candidates are feasible at all.
+A move-suppression term on the *ranking* within whichever set is feasible that
+step can't fix a problem in *which set is feasible* changing step to step. A
+larger constraint-tightening margin (`noise_margin_sigma`, currently 3σ) would
+likely address this directly, but that's a different lever than the one asked
+for here and hasn't been tried.
+
+### 3.5 Seed-sweep distribution (30 seeds per scenario, `seed_sweep.py`)
 
 | Scenario | Mean violations | Max violations | Seeds with ≥1 violation | Mean safety-fallback rate |
 |---|---|---|---|---|
@@ -307,7 +398,7 @@ single run.
 
 Full per-seed results: `outputs/seed_sweep_results.csv`.
 
-### 3.5 Baseline comparison (`baselines.py`): MPC vs. fixed choke vs. PI
+### 3.6 Baseline comparison (`baselines.py`): MPC vs. fixed choke vs. PI
 
 Two baselines, run over identical scenarios/model/limits/seeds for an
 apples-to-apples comparison:
@@ -340,15 +431,21 @@ only because it's not stopping at the safety boundary).
 
 Full results: `outputs/baseline_comparison.csv`.
 
-### 3.6 Lessons learned
+### 3.7 Lessons learned
 
-- **Report the model's real support region, not an aspirational one.** An earlier
-  draft claimed Scenario A's 15% start was "inside supported territory." It
-  wasn't, and saying so would have hidden the actual, still-present cause of that
-  scenario's residual violations. The honest version (§2.3) is more useful: the
-  extrapolation problem belongs to the simulator's calibration, not the
-  controller, and no amount of controller tuning fixes a model that's guessing
-  outside its fitted region.
+- **"Extrapolation" was a hedge, not the actual explanation — checking the
+  model's own numbers found the real one.** Two consecutive earlier drafts got
+  Scenario A's violations wrong: first claiming the 15% start was "inside
+  supported territory" (false), then correctly retracting that but blaming the
+  violations on generic "extrapolation uncertainty" (imprecise — it implies the
+  numbers might not be real). Actually computing FLP's identified steady-state
+  curve (§2.3) showed it exceeds the 200 psi ceiling below ~19% choke, full
+  stop — a concrete, checkable fact about the current model, not a hedge about
+  what an uncalibrated region *might* do. Combined with the ramp-rate limit,
+  that fact alone guarantees several hours of violation from a 15% start,
+  independent of whether the low-choke calibration is trustworthy. The 30-seed
+  "time to enter the safe envelope" distribution (3–5h, mean 4.0h) is tight
+  enough to support this as deterministic rather than noise-driven.
 - **A correctly-specified model still shows real identification error — and the
   dwell-time lead was worth chasing down, not just naming.** §1.2's reframing —
   identify.py shares fitting code with the simulator by construction, so this

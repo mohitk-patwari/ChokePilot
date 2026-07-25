@@ -26,24 +26,34 @@ brief-quote justification.
 The calibrated simulator/limits only have real support in the reference CSV's
 tested 30-65% choke range (only 5 distinct choke levels were ever observed, all
 >=30%). Starting any scenario at a hard 0% shut-in (or a low ~5% ramp-up) forces
-the model deep into extrapolated territory and produces constraint violations
-that are an artifact of the extrapolation, not the controller.
+the model deep into unfitted territory.
 
-DECISION, applied to all three scenarios -- honestly reported, matching
-docs/report.md Sections 2.3/3.1/3.4 exactly; do not restate a softer version of
+CORRECTED (was wrong twice): the violations this causes are NOT an
+"extrapolation uncertainty" artifact -- that framing implies the numbers might
+not be real. They're a DETERMINISTIC INITIAL-CONDITION property, confirmed by
+computing the identified model's own FLP steady-state curve directly:
+FLP_ss(u) exceeds the 200 psi ceiling for any u below ~19% choke (218.4 psi at
+0%, 208.6 at 10%, 203.7 at 15%, clears at 20%). Matching docs/report.md
+Sections 2.3/3.1 exactly; do not restate a softer "extrapolation" version of
 this elsewhere:
-- Scenario A starts from 15% choke instead of 0%. This REDUCES how far into
-  extrapolated territory the startup transient reaches -- it does NOT eliminate
-  the extrapolation, since 15% is still below the calibration's 30% floor. An
-  earlier version of this file (and an earlier report draft) claimed 15% was
-  "inside supported territory"; that claim was false and has been corrected
-  everywhere, including here.
-  Result, from the 30-seed sweep (seed_sweep.py) -- the number to trust, not a
-  single cherry-picked run: every seed shows at least one violation (30/30),
-  mean 2.67/80 steps, max 4/80. This is a stable, deterministic consequence of
-  starting inside extrapolated territory, not fixed by better identification
-  (unaffected by the DWELL_HOURS=40 fix below -- identification accuracy
-  doesn't change what choke region the calibration itself covers).
+- Scenario A starts from 15% choke instead of 0%. `Simulator.reset()`
+  initializes FLP at exactly that choke's steady state -- 203.7 psi, already
+  over the true ceiling, before the controller acts at all. With the
+  +-5%/interval ramp limit, reaching the steady-state-safe 20% takes 1 step,
+  and reaching the controller's own tightened margin (~197.3 psi, crossed
+  ~21-22% choke) takes 2 -- the controller has no authority to move faster
+  than that regardless of how it weighs the tradeoff. FLP's own dynamics
+  (tau=7h, theta=1h) add further lag on top.
+  NEW METRIC -- time to enter the safe envelope (hour after which no further
+  violations occur): single-seed 4h; across the 30-seed sweep, mean 4.0h,
+  range 3-5h. This tightness is itself evidence for "deterministic," not
+  "extrapolation noise" -- an uncertainty-driven artifact would show more
+  seed-to-seed spread.
+  Violation count, from the 30-seed sweep (seed_sweep.py) -- the number to
+  trust, not a single cherry-picked run: every seed shows at least one
+  violation (30/30), mean 2.67/80 steps, max 4/80. Unaffected by the
+  DWELL_HOURS=40 fix below (identification accuracy doesn't change what the
+  identified FLP curve says at low choke, which is the actual cause).
 - Scenarios B and C don't need a startup transient at all (that's Scenario A's
   job), so they start at the choke the identified Q model itself says holds
   ~100 bbl/hr steady-state (solve_choke_for_q() in scenarios.py, ~34.2%) --
@@ -174,12 +184,40 @@ DONE:
   simulator.PARAMS but never identified by identify.py -- restricted to
   identify.CHANNELS).
 
-STALE, not yet refreshed: docs/presentation.md (still references the old 24h
-dwell and 34.4% start) and README.md (still says "treats it as a black box"
-and quotes pre-DWELL_HOURS-fix numbers: 21/80->3/80, 35.7%, etc.) -- both were
-NOT part of the docs/report.md rewrite and still need the same treatment.
+One-sample lag fix: _simulate_fopdt drove sim[k+1] from y_ss[k] (i.e. u[k-theta]);
+Simulator.step() drives the arriving state from u[k+1-theta] (same time index as
+the arrival sample). Fixed to y_ss[k+1] (also fixed identically in identify.py's
+_simulate_with_correction, which had the same bug plus a missed Euler-vs-ZOH
+inconsistency). This WAS Q's "unexplained ~19% tau bias" -- theta now matches
+true theta exactly in 20/20 seed x channel combinations, Q's tau error dropped
+to ~3%. Recalibrating simulator.py's own PARAMS with the fix also revealed the
+"true" theta values were themselves off by 1 this whole time (now 5.00/1,
+7.50/2, 7.00/1, 9.00/3 -- tau unchanged, theta all +1).
 
-TODO: refresh docs/presentation.md and README.md against the current
-DWELL_HOURS=40 / WHT-AP / baseline-comparison state; investigate Q's
-persistent ~19-20% tau identification bias (unaffected by dwell time, cause
-unknown); final polish pass.
+Move-suppression fix: MPCController picked candidates by q_err alone (tie-break
+on move size only), so once near target, candidates within noise of each other
+on q_err got picked by noise -- chattered the valve (Scenario C: 52 moves / 154
+%-points travel over 100h). Added cost = q_err + LAMBDA_MOVE*abs(delta) (also
+applied to the fallback branch's violation-based cost, same reasoning, since
+Scenario C spends 16-23% of steps there). LAMBDA_MOVE=1.0 (bbl/hr required per
+%-point moved). Result: Scenario A/B chattering resolved (5/80, 7/140 moves).
+Scenario C only partially improved (travel 154->129, but move count 52->53
+essentially unchanged) -- root cause is different: C rides the tightened WHP
+floor (208.6 psi) with WHP noise (sigma~1.2 psi, observed swinging 207-213)
+large enough to flip which candidates are feasible step to step, which a
+cost-ranking fix within whichever set is feasible can't solve. A larger
+noise_margin_sigma would likely help; not tried.
+
+STALE, not yet refreshed against recent fixes: docs/presentation.md (still
+references the old 24h dwell and 34.4% start) and README.md (still says
+"treats it as a black box" and quotes pre-DWELL_HOURS-fix numbers) -- neither
+was part of any pass so far. docs/report.md Sections 1.2/3.2/3.3/3.6 are also
+stale (predate the one-sample-lag and/or move-suppression fixes); flagged
+inline there. Sections 2.3/3.1/3.4/3.7 are current (2.3/3.1 rewritten from
+scratch after finding an actual error, not just a numbers refresh -- see
+Known Limitation above).
+
+TODO: refresh docs/presentation.md and README.md against the current state;
+resync docs/report.md's remaining stale sections (1.2/3.2/3.3/3.6); investigate
+whether a larger noise_margin_sigma resolves Scenario C's remaining chatter;
+final polish pass.

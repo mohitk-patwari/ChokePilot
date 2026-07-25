@@ -29,7 +29,7 @@ def scenario_run(request, identified_system):
         u0 = identified_system["u_stable_100"]
     df = run_scenario(name, u0, target_fn, hours, identified_system["model"],
                        identified_system["limits"], sim_seed=seed,
-                       correction=identified_system["correction"])
+                       correction=identified_system["correction"], save=False)
     return u0, df
 
 

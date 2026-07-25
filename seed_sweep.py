@@ -63,7 +63,7 @@ def main():
     for name, u0, target_fn, hours in scenario_defs:
         for seed in range(N_SEEDS):
             df = run_scenario(name, u0, target_fn, hours, model, limits,
-                               sim_seed=seed, correction=correction)
+                               sim_seed=seed, correction=correction, save=False)
             rows.append({
                 "scenario": name,
                 "seed": seed,

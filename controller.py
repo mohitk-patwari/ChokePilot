@@ -26,6 +26,12 @@ from simulator import steady_state_from_params  # noqa: E402
 CHOKE_MIN, CHOKE_MAX = 0.0, 100.0
 MAX_RAMP_PCT = 5.0  # hard constraint: max |choke change| per control interval
 CANDIDATE_DELTAS = np.arange(-MAX_RAMP_PCT, MAX_RAMP_PCT + 1, 1.0)  # 11 candidates, 1% resolution
+# Move-suppression weight: without it, picking purely by q_err lets measurement noise
+# decide the winner whenever candidates are roughly tied (common once near target),
+# chattering the valve to chase noise it can't actually predict. Ratio bbl/hr per
+# %-point moved -- 1.0 means a candidate must predict at least ~1 bbl/hr more
+# improvement per percent it moves than the alternative, or it isn't worth the move.
+LAMBDA_MOVE = 1.0
 
 
 def safety_limits_from_reference(csv_path, margin_frac=0.20, round_to=5.0):
@@ -149,15 +155,27 @@ class MPCController:
 
         feasible = [r for r in results if r["violation"] == 0.0]
         if feasible:
-            chosen = min(feasible, key=lambda r: (r["q_err"], abs(r["new_u"] - current_choke)))
+            for r in feasible:
+                r["cost"] = r["q_err"] + LAMBDA_MOVE * abs(r["new_u"] - current_choke)
+            chosen = min(feasible, key=lambda r: r["cost"])
             explanation = (
                 f"Moved choke to {chosen['new_u']:.1f}% because it keeps WHP/FLP/BHP within "
                 f"safe limits over the next {self.horizon}h and brings predicted oil rate to "
-                f"{chosen['q_end']:.1f} bbl/hr, closest to the {target_q:.1f} bbl/hr target "
-                f"among {len(feasible)} feasible options."
+                f"{chosen['q_end']:.1f} bbl/hr, the best tradeoff between closing the "
+                f"{target_q:.1f} bbl/hr target gap and unnecessary valve movement among "
+                f"{len(feasible)} feasible options."
             )
         else:
-            chosen = min(results, key=lambda r: (r["violation"], abs(r["new_u"] - current_choke)))
+            # Same move-suppression principle as the feasible branch, applied to this
+            # branch's own objective (violation, not q_err): without it, a candidate
+            # whose predicted violation is only marginally smaller (noise-scale) still
+            # wins outright and the choke chatters chasing violation noise instead of
+            # target-error noise. Scenario C spends a lot of time here (an infeasible
+            # target keeps it riding the boundary), so this branch chatters just as
+            # easily as the feasible one if left unweighted.
+            for r in results:
+                r["cost"] = r["violation"] + LAMBDA_MOVE * abs(r["new_u"] - current_choke)
+            chosen = min(results, key=lambda r: r["cost"])
             explanation = (
                 f"No choke move keeps all limits satisfied over the lookahead; moved to "
                 f"{chosen['new_u']:.1f}% because it minimizes the predicted constraint "

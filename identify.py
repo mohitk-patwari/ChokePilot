@@ -86,9 +86,12 @@ def _simulate_with_correction(u, y0, p, correction_coefs, ts):
     y_ss = np.array([steady_state_from_params(p, uu, correction_coefs) for uu in u_delayed])
     sim = np.empty(len(u))
     sim[0] = y0
-    alpha = ts / p["tau"]
+    alpha = 1.0 - np.exp(-ts / p["tau"])  # exact ZOH, matching simulator.py's _simulate_fopdt
+    # y_ss[k+1], not y_ss[k] -- see simulator.py's _simulate_fopdt for why: sim[k+1]
+    # must be driven by the same-time-index (delayed by theta) input as Simulator.step()
+    # uses, not one sample earlier.
     for k in range(len(u) - 1):
-        sim[k + 1] = sim[k] + alpha * (y_ss[k] - sim[k])
+        sim[k + 1] = sim[k] + alpha * (y_ss[k + 1] - sim[k])
     return sim
 
 

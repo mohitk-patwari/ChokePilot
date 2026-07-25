@@ -130,8 +130,13 @@ def _simulate_fopdt(u, y0, a, b, uh, tau, theta_steps, ts, clip_nonneg=False):
     # interval with y_ss held constant during it -- unconditionally stable for any
     # ts/tau ratio and exact (not a first-order approximation like alpha = ts/tau).
     alpha = 1.0 - np.exp(-ts / tau)
+    # y_ss[k+1], not y_ss[k]: Simulator.step() drives the state arriving at sample t
+    # by u_{t-theta} (same time index as the arriving sample, delayed by theta) --
+    # idx = len(u_history)-1-theta right after appending u_t. Driving sim[k+1] by
+    # y_ss[k] used u_{k-theta} instead of u_{(k+1)-theta}, a one-sample lag between
+    # this batch fit and the live simulator it's meant to reproduce/identify.
     for k in range(len(u) - 1):
-        sim[k + 1] = sim[k] + alpha * (y_ss[k] - sim[k])
+        sim[k + 1] = sim[k] + alpha * (y_ss[k + 1] - sim[k])
     return sim
 
 

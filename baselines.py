@@ -24,6 +24,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import matplotlib.pyplot as plt
 
 sys.path.insert(0, str(Path(__file__).parent / "data"))
 from simulator import Simulator, TS_HOURS, steady_state_from_params  # noqa: E402
@@ -154,6 +155,46 @@ def summarize(name, approach, df, limits, step_metrics=None):
     return row
 
 
+_APPROACH_COLORS = {"MPC": "tab:blue", "Fixed": "tab:orange", "PI": "tab:green"}
+_SCENARIO_LABELS = {"A_startup_to_target": "A", "B_target_tracking": "B", "C_infeasible_target": "C"}
+
+
+def plot_comparison(df):
+    """Grouped bar chart, MPC vs. Fixed vs. PI: safety violations (log-scale -- PI's
+    Scenario C count dwarfs everything else) and total barrels produced, per scenario.
+    The single-figure story this project's results boil down to."""
+    scenarios = list(_SCENARIO_LABELS)
+    approaches = list(_APPROACH_COLORS)
+    x = np.arange(len(scenarios))
+    width = 0.25
+
+    fig, (ax_viol, ax_bbl) = plt.subplots(1, 2, figsize=(11, 4.5))
+    for i, approach in enumerate(approaches):
+        sub = df[df.approach == approach].set_index("scenario").loc[scenarios]
+        offset = (i - 1) * width
+        color = _APPROACH_COLORS[approach]
+        ax_viol.bar(x + offset, sub.safety_violations.clip(lower=0.1), width, color=color, label=approach)
+        ax_bbl.bar(x + offset, sub.total_barrels, width, color=color, label=approach)
+
+    ax_viol.set_yscale("log")
+    ax_viol.set_ylabel("Safety violations (log scale)")
+    ax_viol.set_title("Constraint violations by approach")
+    ax_bbl.set_ylabel("Total barrels produced")
+    ax_bbl.set_title("Production by approach")
+    for ax in (ax_viol, ax_bbl):
+        ax.set_xticks(x)
+        ax.set_xticklabels([_SCENARIO_LABELS[s] for s in scenarios])
+        ax.set_xlabel("Scenario")
+        ax.legend(fontsize=8)
+
+    fig.suptitle("Baseline comparison: brute-force MPC vs. Fixed choke vs. PI")
+    fig.tight_layout()
+    path = OUTPUT_DIR / "baseline_comparison.png"
+    fig.savefig(path, dpi=130)
+    plt.close(fig)
+    print(f"saved {path}")
+
+
 def main():
     step_df = run_step_test(seed=0)
     model = identify_model(step_df)
@@ -182,7 +223,8 @@ def main():
     for name, u0, target_fn, hours, seed in specs:
         step_kwargs = dict(step_time=60, before_target=100.0, after_target=150.0) if name.startswith("B_") else None
 
-        df_mpc = run_scenario(name, u0, target_fn, hours, model, limits, sim_seed=seed, correction=correction)
+        df_mpc = run_scenario(name, u0, target_fn, hours, model, limits, sim_seed=seed,
+                               correction=correction, save=False)
         df_fixed = run_fixed_baseline(name, u0, target_fn, hours, model, correction, tightened, sim_seed=seed)
         df_pi = run_pi_baseline(name, u0, target_fn, hours, sim_seed=seed, Kp=Kp, Ki=Ki)
 
@@ -195,6 +237,7 @@ def main():
     out.to_csv(OUTPUT_DIR / "baseline_comparison.csv", index=False)
     print(out.to_string(index=False))
     print(f"\nsaved {OUTPUT_DIR / 'baseline_comparison.csv'}")
+    plot_comparison(out)
 
 
 if __name__ == "__main__":

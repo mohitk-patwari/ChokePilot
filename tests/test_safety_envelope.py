@@ -21,7 +21,8 @@ N_SEEDS = 30
 def test_infeasible_target_never_breaches_true_limit(identified_system, seed):
     model, limits, correction = (identified_system[k] for k in ("model", "limits", "correction"))
     df = run_scenario("C_infeasible_target", identified_system["u_stable_100"],
-                       (lambda t: 400.0), 100, model, limits, sim_seed=seed, correction=correction)
+                       (lambda t: 400.0), 100, model, limits, sim_seed=seed, correction=correction,
+                       save=False)
     for ch in ("WHP", "FLP", "BHP"):
         lo, hi = limits[ch]
         assert (df[ch] >= lo).all() and (df[ch] <= hi).all(), (
