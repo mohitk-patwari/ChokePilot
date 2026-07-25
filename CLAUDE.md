@@ -15,6 +15,12 @@ clearly commented as such. Safety limits are PLACEHOLDERS derived from the CSV's
 observed range +20% margin, then further tightened by 3-sigma of each channel's
 identified measurement noise (robust-MPC constraint tightening) so real sensor
 noise doesn't breach the true limit even when a noise-free prediction rides it.
+Limits are one-sided, not symmetric bands: WHP and BHP are lower-bounded only
+(hi=inf -- high pressure means safely choked back; the risk is too LOW, per the
+brief's "if WHP becomes too low..." line and BHP's drawdown/reservoir-health role),
+FLP is upper-bounded only (lo=-inf -- backpressure/separator risk is on the high
+side). See safety_limits_from_reference() in controller.py for the per-channel
+brief-quote justification.
 
 ## Known limitation (deliberately handled, not a bug)
 The calibrated simulator/limits only have real support in the 30-65% choke range
