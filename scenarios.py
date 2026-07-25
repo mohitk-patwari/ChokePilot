@@ -30,6 +30,16 @@ OUTPUT_DIR.mkdir(exist_ok=True)
 CSV_PATH = Path(__file__).parent / "data" / "Autonomous_Choke_Control_Simulated_Dataset.csv"
 
 
+def solve_choke_for_q(model, target_q):
+    """Invert the calibrated Q(u) = A + B*u/(u+uh) steady-state map for u -- used to
+    start Scenarios B/C from a stable, in-range operating point instead of a startup
+    ramp (same reasoning as Scenario A's fix; see CLAUDE.md Known Limitation)."""
+    p = model["Q"]
+    y = target_q - p["A"]
+    u = y * p["uh"] / (p["B"] - y)
+    return max(0.0, min(100.0, u))
+
+
 def run_scenario(name, initial_choke, target_fn, hours, model, limits, sim_seed, correction=None):
     sim = Simulator(initial_choke=initial_choke, seed=sim_seed)
     ctrl = MPCController(model, limits, correction=correction)
@@ -109,20 +119,27 @@ def main():
         print(f"  {ch}: {before:.3f} -> {after:.3f}  [{used}]")
     print()
 
+    # Neither 0% (Scenario A's old shut-in start) nor a low ~5% ramp-up start has real
+    # support in the calibrated model/limits -- both only have real support in the
+    # reference data's 30-65% tested band (see CLAUDE.md Known Limitation). Scenarios
+    # B and C don't need a startup transient at all (that's Scenario A's job), so they
+    # start at the choke the model itself says holds ~100 bbl/hr steady-state, rather
+    # than forcing a ramp through unsupported territory just to get there.
+    u_stable_100 = solve_choke_for_q(model, 100.0)
+    print(f"stable in-range choke for ~100 bbl/hr (used as B/C start): {u_stable_100:.1f}%\n")
+
     scenarios = [
-        # 15% not 0%: the calibrated model/limits only have real support in the
-        # reference data's 30-65% tested band (see CLAUDE.md Known Limitation) --
-        # starting from a hard 0% shut-in forces extrapolation and causes early-hour
-        # constraint violations that are an artifact of that extrapolation, not the
-        # controller. 15% keeps the startup transient closer to supported territory.
+        # 15% not 0%: same reasoning, but Scenario A's whole point is the startup
+        # ramp, so it still starts low -- just inside supported territory instead of
+        # at a hard 0% shut-in that forces extrapolation and early constraint violations.
         ("A_startup_to_target", 15.0, (lambda t: 100.0), 80, 10),
-        ("B_target_tracking", 0.0, (lambda t: 100.0 if t < 60 else 150.0), 140, 11),
-        ("C_infeasible_target", 0.0, (lambda t: 400.0), 100, 12),
+        ("B_target_tracking", u_stable_100, (lambda t: 100.0 if t < 60 else 150.0), 140, 11),
+        ("C_infeasible_target", u_stable_100, (lambda t: 400.0), 100, 12),
     ]
     titles = {
         "A_startup_to_target": "Scenario A - Startup to Target (15% choke -> 100 bbl/hr)",
-        "B_target_tracking": "Scenario B - Target Tracking (100 -> 150 bbl/hr at t=60h)",
-        "C_infeasible_target": "Scenario C - Infeasible Target (400 bbl/hr requested)",
+        "B_target_tracking": f"Scenario B - Target Tracking ({u_stable_100:.0f}% choke -> 100 -> 150 bbl/hr at t=60h)",
+        "C_infeasible_target": f"Scenario C - Infeasible Target ({u_stable_100:.0f}% choke start, 400 bbl/hr requested)",
     }
 
     for name, u0, target_fn, hours, seed in scenarios:
