@@ -29,7 +29,16 @@ OUTPUT_DIR.mkdir(exist_ok=True)
 # artificial lift and no changing reservoir properties (challenge's own assumptions)
 # isn't expected to show hysteresis, so an up-only sweep is enough to characterize it.
 STEP_LEVELS = [0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100]
-DWELL_HOURS = 24  # ~4x the slowest calibrated time constant + dead time -> near-settled
+# ~4x the slowest TRUE time constant + dead time -> near-settled. BHP's true tau=9h,
+# theta=2h needs ~4*9+2=38h; the previous value of 24h under-dwelled it (and, to a
+# lesser extent, WHP/FLP) and was the dominant cause of their large mean tau
+# identification error (see verify_identification.py). Confirmed by direct
+# comparison: at 24h dwell, mean tau error was Q 20% / WHP 16% / FLP 27% / BHP 31%;
+# at 40h, WHP/FLP/BHP drop to roughly 4% / 14% / 8% -- Q alone stays near 19% at
+# every dwell tested (24-80h), so its error is NOT dwell-limited; it's a separate,
+# still-unexplained identification bias (tests/test_identification.py's thresholds
+# reflect this, not a single uniform bound).
+DWELL_HOURS = 40
 CHANNELS = ["Q", "WHP", "FLP", "BHP"]
 
 

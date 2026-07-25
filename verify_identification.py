@@ -16,7 +16,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent / "data"))
 from simulator import PARAMS as TRUE_PARAMS  # noqa: E402
 
-from identify import run_step_test, identify_model  # noqa: E402
+from identify import run_step_test, identify_model, CHANNELS  # noqa: E402
 
 SEEDS = [0, 1, 2, 7, 99]
 
@@ -26,7 +26,11 @@ def main():
     for seed in SEEDS:
         df = run_step_test(seed=seed)
         model = identify_model(df)
-        for ch, true_p in TRUE_PARAMS.items():
+        # Only the 4 channels identify.py actually fits from data -- simulator.PARAMS
+        # also holds WHT/AP now, which are hand-set placeholders (see data/simulator.py),
+        # never identified from a step test, so they have no "true" value to compare.
+        for ch in CHANNELS:
+            true_p = TRUE_PARAMS[ch]
             ident_p = model[ch]
             tau_err_pct = 100.0 * abs(ident_p["tau"] - true_p["tau"]) / true_p["tau"]
             rows.append({
@@ -44,7 +48,7 @@ def main():
 
     print()
     print("mean tau %% error by channel across seeds:")
-    for ch in TRUE_PARAMS:
+    for ch in CHANNELS:
         errs = [r["tau_err_pct"] for r in rows if r["channel"] == ch]
         print(f"  {ch}: {sum(errs) / len(errs):.1f}%  (min {min(errs):.1f}%, max {max(errs):.1f}%)")
 

@@ -115,4 +115,21 @@ Q 3.50->3.27, WHP 4.30->4.17, BHP 26.95->25.67 (all used); FLP 2.31->2.34
 Scenario B/C start fix (start at the ~35.7% choke the model shows holds ~100
 bbl/hr steady-state, instead of a low ramp-up start) -- violations 22/140 -> 0/140
 (B) and 20/100 -> 0/100 (C), fully eliminated.
-TODO: write architecture doc; write presentation slides; final polish pass.
+Added requirements.txt (pinned numpy/pandas/matplotlib/pytest) and tests/ (pytest:
+ramp-rate, choke bounds, infeasible-target safety across a 30-seed sweep, identified-
+tau accuracy). Writing the tau-accuracy test surfaced that identify.py's DWELL_HOURS
+(24h) under-dwelled the slower channels relative to their TRUE time constants (BHP
+true tau=9h, theta=2h needs ~4*9+2=38h to settle) -- confirmed by direct measurement,
+so bumped to 40h. Effect (verify_identification.py, 5 seeds): WHP mean tau error
+16%->4%, FLP 27%->14%, BHP 31%->8%; Q stays ~19% at every dwell tested (24-80h) --
+a separate, still-unexplained bias, not a settling-time problem. Side effect: this
+also fully eliminated Scenario C's previously-reported residual 2/30-seed safety
+violations (better-identified noise_std tightens the safety margin more accurately).
+STALE AS OF THIS CHANGE: docs/report.md, docs/presentation.md, README.md, and every
+outputs/*.csv|png were written against the old 24h-dwell model -- their specific
+numbers (tau table, Scenario A/B/C results, safety-limit values, seed-sweep counts)
+no longer match a fresh run. Re-running scenarios.py/seed_sweep.py/baselines.py and
+refreshing those docs is a follow-up, not done in this pass.
+TODO: refresh docs/report.md, docs/presentation.md, README.md, and outputs/ against
+the DWELL_HOURS=40 model; investigate Q's persistent ~19% tau identification bias;
+final polish pass.

@@ -1,9 +1,7 @@
 # ChokePilot — Autonomous Choke Controller
 ### Honeywell Campus Connect Hackathon (PS3)
 
-Speaker notes are in *italics* under each slide. Numbers are pulled live from
-`scenarios.py` output and match what `docs/report.md` will use — don't let the
-two drift apart.
+Speaker notes are in *italics* under each slide.
 
 ---
 
@@ -18,115 +16,130 @@ under-perform because of five well-documented, unglamorous frictions:
 
 1. **Operators "baby" the choke** — fear of sand/formation damage leaves real
    production capacity unused. *(Eng-Tips forum discussion)*
-2. **Too many wells, too little attention** — chokes get set once and left
-   alone. *(patent literature on standard industry practice)*
+2. **Too many wells, too little attention** — a choke gets set once during a
+   shift and left alone, because nobody has the bandwidth to revisit it
+   continuously. *(patent literature on standard industry practice)*
 3. **Slugging is caught reactively** — a human notices fluctuations after the
    fact, not before. *(SPE technical paper)*
-4. **APC needs a maintenance team** — the real barrier to upstream adoption
-   isn't the control theory, it's who keeps the models alive. *(on-record
-   Honeywell upstream solutions interview)*
-5. **Alarm fatigue and distrust of black-box automation** — operators override
+4. **APC doesn't scale upstream because models need a dedicated team** — the
+   on-record barrier isn't algorithmic sophistication, it's who keeps the
+   model current. *(on-record Honeywell upstream solutions interview)*
+5. **Alarm fatigue and distrust of opaque automation** — operators override
    what they don't understand. *(NTSB SCADA safety review)*
 
-*ChokePilot is a small, closed-loop answer to all five: continuous
-optimization instead of a "set and forget" choke, brute-force logic instead of
-a model a dedicated team must maintain, and a logged one-sentence rationale
-for every move instead of a black box.*
+*ChokePilot answers all five: continuous optimization instead of a
+"set and forget" choke; a search-based, no-heavy-optimizer controller with a
+fresh from-scratch identification step instead of a model a dedicated team
+must maintain — no solver license, no optimizer internals to tune, nothing
+exotic to keep alive; and a logged one-sentence rationale for every move
+instead of a black box. ChokePilot is a small-scale, single-well version of
+the same closed-loop direction Honeywell's APC customers are already moving
+toward on wells — a focused proof-of-concept of the wellhead-to-control-room
+optimization problem Honeywell's Upstream Production Performance Suite
+(UPPS) addresses at scale. It does not claim equivalence; it echoes the same
+idea at a scale one person can build and verify in a project timeline.*
 
 ---
 
-### Slide 2 — No Official Simulator: What We Built Instead
+### Slide 2 — No Official Simulator: What We Built, and What It Can't Tell Us
 
 - The platform provided no simulator — only
   `Autonomous_Choke_Control_Simulated_Dataset.csv` (120 hr, choke tested
   30–65%) and a presentation template.
-- We built `data/simulator.py`: a **calibrated substitute**, clearly commented
-  as such, fit to that CSV with the exact interface the brief specifies —
+- `data/simulator.py` is a **calibrated substitute**, clearly commented as
+  such, exposing the exact interface the brief specifies:
   `Q, WHP, FLP, BHP = simulator.step(choke_position)`.
-- Model shape per channel: a saturating steady-state map
-  `y_ss(u) = A + B·u/(u+uh)` (monotonic, bounded — the standard choke
-  flow/pressure-vs-opening curve) driving first-order-plus-dead-time (FOPDT)
-  dynamics.
-- Safety limits (WHP/FLP/BHP) are **placeholders**: derived from the CSV's
-  observed range +20% margin, since no official limits were specified.
+- Steady-state map per channel: `y_ss(u) = A + B·u/(u+uh)`; Q is forced
+  through zero at 0% choke (a fully shut choke physically gives zero flow).
+- Dynamics: FOPDT, discretized with the **exact** zero-order-hold form
+  `alpha = 1 - exp(-Ts/tau)` — not the Euler approximation `Ts/tau`, which is
+  only accurate when `Ts ≪ tau` and can go unstable outside that regime.
+- The steady-state fit uses **only the last ~6 hours of each dwell period**
+  (near-settled samples), not the whole trajectory including transients —
+  fitting on transient-contaminated samples was found to bias the curve and
+  the downstream τ/θ search that compensates for it.
 
-*This isn't a shortcut — it's the only path available without an official
-simulator, and it's built to be swapped out: nothing downstream depends on
-this file's internals, only on `.step()`.*
-
----
-
-### Slide 3 — Open-Loop Step Test
-
-- Per the brief: "students are expected to generate their own data using the
-  simulator" — so we run a **fresh** staircase, not a reuse of the reference
-  CSV.
-- Monotonic sweep, 0% → 100% in 10% steps, **24 h dwell** per level (~4× the
-  slowest calibrated time constant + dead time → near-settled before the
-  next step).
-- A naturally-flowing well with no artificial lift and unchanging reservoir
-  properties isn't expected to show hysteresis, so an up-only sweep is
-  sufficient to characterize it.
-- Output: `outputs/step_test_data.csv` / `step_test_response.png` — Q, WHP,
-  FLP, BHP response to the full choke range.
+**Two honestly-reported findings, not hidden:**
+- With the `uh` search grid widened to check for boundary-pinning, **WHP,
+  FLP, and BHP all pin at the widened boundary (50,000)** — their
+  steady-state response is statistically indistinguishable from linear over
+  the tested 30–65% range. Only Q, anchored through zero, genuinely needs the
+  saturating shape. The fitting code prints this as a warning rather than
+  silently accepting it.
+- The reference CSV covers **only 5 distinct choke levels**, one dwell period
+  each, fit as a single deterministic least-squares point estimate — there is
+  no confidence interval or uncertainty quantification anywhere in this
+  pipeline. Every downstream number inherits that uncertainty without a
+  formal error bar.
 
 ---
 
-### Slide 4 — Identified FOPDT Model
+### Slide 3 — Open-Loop Step Test: What It Actually Tests
 
-Fit by brute-force grid search (uh, tau, theta) + closed-form regression
-(A, B) — same method used to calibrate the simulator itself, applied fresh to
-our own step test:
+- Per the brief, `identify.py` runs its **own** fresh monotonic staircase
+  (0→100% in 10% steps, 24h dwell) against the calibrated simulator, rather
+  than reusing the reference CSV.
+- **Reframing an earlier claim:** `identify.py` imports `_fit_fopdt` and
+  `_simulate_fopdt` directly from `data/simulator.py` — the *same* private
+  fitting functions used to calibrate the simulator itself, not an
+  independently implemented estimator. The functional form is shared **by
+  construction**. Calling this "treating the simulator as a black box"
+  overstates what's actually being tested.
+- What it legitimately tests: **parameter identification accuracy under a
+  correctly-specified model.** `verify_identification.py` compares identified
+  vs. true τ across 5 seeds (0, 1, 2, 7, 99):
 
-| Channel | Time constant τ (h) |
-|---|---|
-| Q (oil rate)   | 2.25 |
-| WHP            | 3.25 |
-| FLP            | 2.50 |
-| BHP            | 3.00 |
+| Channel | True τ (h) | Mean identified τ (h) | Mean error | Error range |
+|---|---|---|---|---|
+| Q | 5.00 | 4.00 | 20.0% | 15.0–25.0% |
+| WHP | 7.50 | 6.30 | 16.0% | 13.3–16.7% |
+| FLP | 7.00 | 5.10 | 27.1% | 25.0–28.6% |
+| BHP | 9.00 | 6.20 | 31.1% | 25.0–38.9% |
 
-- Q's steady-state map is forced through zero at 0% choke (a fully shut choke
-  physically gives zero flow — no extrapolated intercept).
-- This identified model — not the simulator's internal parameters — is what
-  the controller's brute-force MPC predicts forward with.
+*Identified τ is lower than true τ in all 20/20 seed×channel combinations —
+one-directional bias, not scattered noise. Since the model structure is
+guaranteed correct, this comes from elsewhere — most plausibly finite dwell
+time relative to the (larger) true time constants: BHP's true τ=9h with θ=2h
+needs roughly 4τ+θ ≈ 38h to fully settle, well past the 24h dwell used. This
+is flagged as a real, unresolved limitation. Dead-time identification is
+tighter: Q and FLP match the true θ exactly every seed; WHP and BHP are
+consistently off by exactly 1 sample.*
 
 ---
 
-### Slide 5 — Hybrid Physics + Learned Correction
+### Slide 4 — Hybrid Physics + Learned Correction: A Null Result, Reported Honestly
 
-- On top of the FOPDT physics fit, we fit a **tiny** degree-1
-  polynomial-in-choke correction on the residual the physics model leaves on
-  a step test — a bias correction on the steady-state map, not a replacement
-  for the physics dynamics.
-- Validated honestly: RMSE compared **physics-only vs. physics+correction on
-  a held-out step test** (different noise draw, same design), and a channel
-  only keeps the correction if it demonstrably helps.
+- A small degree-1 polynomial-in-choke correction on the physics FOPDT
+  residual, validated on a **held-out** step test before being trusted.
 
-| Channel | Physics-only RMSE | + Correction RMSE | Kept? |
+| Channel | Physics-only RMSE | +Correction RMSE | Kept? |
 |---|---|---|---|
-| Q   | 3.50  | 3.27  | ✅ used |
-| WHP | 4.30  | 4.17  | ✅ used |
-| BHP | 26.95 | 25.67 | ✅ used |
-| FLP | 2.31  | 2.34  | ❌ skipped — didn't generalize |
+| Q | 1.88 | 2.04 | ❌ skipped |
+| WHP | 1.33 | 1.42 | ❌ skipped |
+| FLP | 1.00 | 1.08 | ❌ skipped |
+| BHP | 10.66 | 10.79 | ❌ skipped |
 
-*FLP's correction made the training fit look better but made held-out error
-worse, so it's dropped. A correction that doesn't demonstrably help has no
-business being wired into the controller just because it exists — that
-discipline is the point of reporting it this way.*
+*After the steady-state re-fit and exact-ZOH discretization fixes (Slide 2),
+the physics-only fit is now tight enough on every channel that the
+correction never generalizes — disabled everywhere by
+`select_beneficial_corrections()`. The controller currently runs on pure
+physics. The mechanism stays in the codebase — the validate-before-trust
+discipline is the actual point of including it, not the RMSE number — in
+case a future recalibration reopens a gap it could close.*
 
 ---
 
-### Slide 6 — Known Limitation: The Support Region
+### Slide 5 — Safety Limits Are One-Sided, Not Symmetric Bands
 
-- The calibrated simulator and safety limits only have **real support** in
-  the 30–65% choke range — the band the reference CSV actually tested.
-- Starting a scenario at a hard 0% shut-in (or a low ~5% ramp-up) forces
-  extrapolation outside that support, causing early-hour constraint
-  violations that are an artifact of the extrapolation — not the controller.
-- **Decision, applied consistently across all three scenarios:** start every
-  scenario inside supported territory rather than a hard extrapolated
-  extreme, while still preserving what each scenario is designed to
-  demonstrate. (Full effect on results — Slide 10.)
+| Channel | Direction enforced | Limit | Brief basis |
+|---|---|---|---|
+| WHP | floor only (`hi = +inf`) | ≥ 205 psi | *"If WHP becomes too low, the well may operate outside its recommended operating envelope."* High WHP just means the choke is closed back further — safe. |
+| BHP | floor only (`hi = +inf`) | ≥ 2830 psi | *"one of the most important indicators of reservoir health and drawdown"* — low BHP means excessive drawdown; high BHP means safely choked back. |
+| FLP | ceiling only (`lo = -inf`) | ≤ 200 psi | *"helps ensure stable transportation of produced fluids"* — the risk is backpressure/separator overpressure on the high side, not a low reading. |
+
+*An earlier draft bracketed all three symmetrically, which could reject a
+high-WHP/high-BHP or low-FLP state that isn't actually unsafe. These are
+further tightened inside the controller (Slide 7) before use.*
 
 ---
 
@@ -134,127 +147,220 @@ discipline is the point of reporting it this way.*
 
 ---
 
-### Slide 7 — Brute-Force MPC: Why No Optimizer
+### Slide 6 — What This Actually Is: One-Step Search With Hold-Constant Prediction
 
-Each control interval (Ts = 1 h):
+*An earlier draft called this "brute-force MPC." That overstates it.*
 
-1. Enumerate **11 fixed candidate moves**: −5% to +5% in 1% steps — the full
-   range the ramp-rate constraint allows.
-2. Simulate each candidate forward over a lookahead horizon with the
-   identified FOPDT (+ correction) model.
+Each control interval:
+
+1. Enumerate **11 legal choke moves** (−5% to +5% in 1% steps — the full
+   ramp-rate range) for **this interval only** — not a search over a
+   sequence of future moves.
+2. For each candidate, **hold that new position constant** for the rest of
+   the lookahead horizon and simulate forward — a cheap proxy for "what
+   happens if I stop adjusting," not a genuine multi-step trajectory
+   optimization.
 3. Reject any candidate predicted to breach a WHP/FLP/BHP limit anywhere in
-   the horizon.
+   that held-constant horizon.
 4. Command the feasible candidate whose end-of-horizon predicted oil rate is
-   closest to target.
+   closest to target; if none is feasible, fall back to the one minimizing
+   predicted violation.
 
-- Hard constraints enforced by construction: choke ∈ [0, 100]%, |Δchoke| ≤ 5%
-  per interval.
-- No optimizer library, no gradient solver — 11 candidates × a short horizon
-  is cheap enough to brute-force. The brief explicitly calls this
-  acceptable, and it directly answers pain point #4 (APC needing a dedicated
-  modeling team): there's no solver to tune or maintain.
+- This **is** receding-horizon in the classic sense — it re-runs every
+  interval with fresh measurements — but the per-step search itself is a
+  one-step decision screened by a hold-constant forward simulation.
+  Horizon is derived, not hand-tuned: `ceil(3 × max(τ) / Ts)`, clipped to
+  [3, 12] hours.
+- **Safety here is best-effort, not formally guaranteed** — no recursive
+  feasibility check, no terminal invariant set. The 30-seed sweep (Slide 13)
+  shows the safety-fallback branch firing on **23.6%** of Scenario C's steps,
+  precisely because that scenario runs at the edge of what the model
+  considers feasible, with no formal guarantee behind it — only a greedy,
+  per-step search that has worked well empirically.
 
 ---
 
-### Slide 8 — Constraint Tightening for Safety
+### Slide 7 — Constraint Tightening for Noise
 
 - Predictions are noise-free, but real sensor readings carry measurement
   noise — riding the true limit exactly would let real noise dip past it.
-- Standard **robust-MPC constraint tightening**: back off each limit by
-  **3σ** of that channel's identified noise_std before the controller ever
+- Standard robust-MPC constraint tightening: back off each limit by **3σ**
+  of that channel's identified `noise_std` before the controller ever
   compares a prediction against it.
-- If *no* candidate is fully feasible (e.g. noise has already pushed a
-  reading near a limit), the controller falls back to the candidate that
-  **minimizes** the predicted violation — it never freezes or refuses to
-  act.
+- If no candidate is fully feasible, the controller falls back to the one
+  that minimizes predicted violation — it never freezes or refuses to act.
+
+---
+
+### Slide 8 — The Extrapolation Problem Belongs to the Simulator, Not the Controller
+
+*An earlier draft claimed Scenario A's 15% starting choke was "inside the
+model's supported range." That claim was false.*
+
+- The reference CSV's tested band is 30–65%; 15% is below it. Moving
+  Scenario A's start from 0% to 15% **reduced how far** into extrapolated
+  territory the startup transient reaches — it did not eliminate the
+  extrapolation.
+- Extrapolation uncertainty is a property of the substitute simulator's
+  calibration (only 5 discrete choke levels were ever observed, all ≥30% —
+  Slide 2), not something the controller can detect or correct for. The
+  controller has no way to know its own prediction model is running on
+  unvalidated territory; it simply predicts with the curve it has.
+- Any confidence below 30% choke is inherited entirely from the fitted
+  curve's shape (monotonic and bounded by construction) staying "physically
+  sane" under extrapolation — not from evidence.
+- Scenario A's residual violations, reported across 30 seeds (Slide 10), are
+  the direct, expected consequence.
 
 ---
 
 ### Slide 9 — Explainability Is a Logged Field, Not a Slide
 
-Directly answers pain point #5 (alarm fatigue / distrust of opaque
-automation): every decision produces a real, human-readable rationale — not
-just a design principle, a field in the output CSV, in both branches of the
-logic.
+Directly answers pain point #5: every decision produces a real,
+human-readable rationale — a field in the output CSV, in both branches.
 
-> *"Moved choke to 35% because it keeps WHP/FLP/BHP within safe limits over
-> the next 10h and brings predicted oil rate to 99.9 bbl/hr, closest to the
-> 100.0 bbl/hr target among 10 feasible options."*
-> — Scenario A, actual logged decision
+> *"Moved choke to 34.0% because it keeps WHP/FLP/BHP within safe limits over
+> the next 12h and brings predicted oil rate to 99.1 bbl/hr, closest to the
+> 100.0 bbl/hr target among 11 feasible options."*
+> — normal branch, actual logged decision
 
-> *"No choke move keeps all limits satisfied over the lookahead; moved to X%
-> because it minimizes the predicted constraint violation (Y psi-steps over
-> horizon)."*
+> *"No choke move keeps all limits satisfied over the lookahead; moved to
+> 65.4% because it minimizes the predicted constraint violation (5.8
+> psi-steps over horizon)."*
 > — safety-fallback branch, same field, same guarantee
+
+*Commanded choke values are rounded to 0.1% before being used for
+prediction, selection, and the logged string — the rationale can never
+silently diverge from what was actually applied.*
 
 **Honeywell echo:** dashboard/output layering mirrors Uniformance's PHD
 (historian) / KPI (target-tracking) / Asset Sentinel (risk/alert) structure —
-this is a focused proof-of-concept of the same wellhead-to-control-room
-optimization problem Honeywell's Upstream Production Performance Suite
-(UPPS) addresses at scale. *(echoes, not replicates.)*
+a focused proof-of-concept of the same wellhead-to-control-room optimization
+problem UPPS addresses at scale. *(echoes, not replicates.)*
 
 ---
 
 ## Section 3 — Results
 
+*All single-run numbers below use the default seed; the 30-seed sweep
+(Slide 13) is the number to trust over any one run.*
+
 ---
 
 ### Slide 10 — Scenario A: Startup to Target
 
-- Starts at **15% choke** (not a hard 0% shut-in — Slide 6), target 100
-  bbl/hr, 80-hour run.
-- Constraint violations: **21/80 → 3/80** after the support-region fix.
-- Residual 3 violations are a 2–4 psi BHP overshoot during the ramp-limited
-  hours-2–4 transient — shrunk to near zero, not fully eliminated, and
-  honestly reported as such.
-- Final state: target 100.0, actual **104.0 bbl/hr**, choke settled at 35%.
-- Zero ramp-rate violations across the whole run.
+- 15% choke → 100 bbl/hr target, 80-hour run.
+- **Tracking:** trailing 10-hour mean (hours 70–79) of **99.26 bbl/hr** at a
+  steady 34.0% choke.
+- **Safety, single seed:** 2/80 constraint samples outside limits.
+- **Safety, honest (30-seed sweep):** every seed shows at least one
+  violation (30/30), mean **2.67/80**, max 4/80 — a stable, deterministic
+  consequence of starting inside extrapolated territory, not one noisy run.
+- **Ramp-rate:** 0/80 violations in every seed — the extrapolation-driven
+  pressure transient was the binding limit, never the ±5%/interval
+  constraint.
 
 ---
 
 ### Slide 11 — Scenario B: Target Tracking
 
-- Starts at **35.7% choke** — the point the identified Q model itself says
-  holds ~100 bbl/hr steady-state (`solve_choke_for_q()`), not a ramp-up
-  start.
-- Target steps **100 → 150 bbl/hr at t = 60h**, 140-hour run.
-- Constraint violations: **22/140 → 0/140** — fully eliminated, because the
-  whole run now stays inside the model's supported territory.
-- Final state: target 150.0, actual **148.3 bbl/hr**, choke settled at 66%.
+- 34.4% choke start, target steps **100 → 150 bbl/hr at t = 60h**, 140-hour
+  run.
+- **Tracking:** trailing 10-hour mean **100.76 bbl/hr** at 34.4% choke before
+  the step (hours 50–59); **150.87 bbl/hr** at 61.4% choke after settling
+  (hours 130–139).
+- **Safety:** 0/140 in the representative run **and** 0/140 in **all 30
+  seeds** — the only scenario with a perfectly clean sweep.
 
 ---
 
 ### Slide 12 — Scenario C: Infeasible Target
 
-- Same 35.7% stable start, but the target is **400 bbl/hr** — deliberately
-  beyond what's safely achievable.
-- The controller doesn't chase it: it settles at the **maximum safe rate**
-  instead of forcing an infeasible move.
-- Constraint violations: **20/100 → 0/100** — fully eliminated.
-- Final state: target 400.0, actual **158.8 bbl/hr**, choke settled at 76%
-  (near the top of its safe operating range for this target/limit
-  combination).
-- Sample logged rationale: *"...brings predicted oil rate to 161.8 bbl/hr,
-  closest to the 400.0 bbl/hr target among 10 feasible options"* — the
-  controller is explicit that it's doing the best it safely can, not
-  silently failing.
+- 34.4% choke start, **400 bbl/hr requested** — deliberately beyond what's
+  safely achievable.
+- **Behavior:** does not chase the target into a violation. Trailing
+  10-hour mean **162.80 bbl/hr** at 69.7% choke — the maximum rate the
+  tightened envelope allows, not 400.
+- **Safety, single seed:** 0/100. **30-seed sweep:** mean 0.07/100, max 1,
+  only 2/30 seeds show any violation at all — a rare, small residual, not a
+  systematic problem.
+- **Safety-fallback frequency:** 23.6% of steps — far higher than A or B,
+  because this scenario deliberately runs near the edge of the tightened
+  feasible envelope for its entire duration. Frequent fallback here is
+  expected behavior, not a red flag.
 
 ---
 
-### Slide 13 — Lessons Learned
+### Slide 13 — Seed-Sweep Distribution (30 seeds per scenario)
 
-- **The support-region fix was the single highest-leverage change.**
-  Starting scenarios inside the calibrated model's real support (30–65% CSV
-  band) rather than at extrapolated extremes cut total violations across all
-  three scenarios from 63/300 to 3/300 — without touching the controller
-  logic at all. The remaining 3 are a genuine ramp-limited transient, not a
-  modeling artifact.
-- **Report correction results honestly, including the negative one.** The
-  learned correction layer only ships per-channel where it beats physics-only
-  on held-out data — FLP's fit looked better in-sample and was dropped
-  because it didn't generalize. That discipline matters more than the RMSE
-  numbers themselves.
-- **Brute-force is a feature, not a compromise.** 11 fixed candidates with a
-  logged rationale per decision directly answers two of the five pain points
-  this project set out to address (maintenance burden, operator trust) —
-  a fancier optimizer would have made both worse, not better.
+| Scenario | Mean violations | Max violations | Seeds with ≥1 violation | Mean safety-fallback rate |
+|---|---|---|---|---|
+| A — Startup to Target | 2.67 / 80 | 4 | 30 / 30 | 4.38% |
+| B — Target Tracking | 0.00 / 140 | 0 | 0 / 30 | 0.00% |
+| C — Infeasible Target | 0.07 / 100 | 1 | 2 / 30 | 23.57% |
+
+*Full per-seed results: `outputs/seed_sweep_results.csv`. A single seed's "0
+violations" is a point sample from a noisy system — the distribution is what
+actually supports a safety claim.*
+
+---
+
+### Slide 14 — Baseline Comparison: MPC vs. Fixed Choke vs. PI
+
+Two baselines, run over identical scenarios/model/limits/seeds:
+
+- **Fixed** — the choke the identified model says holds the target at
+  steady state, walked back until its own steady-state predictions clear the
+  tightened envelope, then held. Models pain point #2: set once, left alone.
+- **PI** — velocity-form PI on oil rate, IMC-tuned from the identified
+  model, **blind to WHP/FLP/BHP by design** — the point of the comparison.
+
+| Scenario | Approach | Safety violations | Total barrels | Notes |
+|---|---|---|---|---|
+| A | MPC | 2/80 | 7681.1 | |
+| A | Fixed | 3/80 | 7730.5 | |
+| A | PI | 3/80 | 7727.0 | |
+| B | MPC | 0/140 | 17759.0 | settling time 73h, overshoot 7.4% |
+| B | Fixed | 0/140 | 17748.4 | settling time 48h — faster, no lookahead caution |
+| B | PI | 0/140 | 17651.1 | settling time 70h, overshoot 10.1% — worst overshoot |
+| C | MPC | **0/100** | 15884.7 | |
+| C | Fixed | **0/100** | 16016.9 | |
+| C | PI | **169/100** | 18880.5 | blindly chases the infeasible target into repeated violations |
+
+*The PI baseline's 169 safety violations in Scenario C (out of 100 steps,
+summed across three pressure channels — so it can exceed 100) is the
+clearest result in this whole comparison: a controller with no predictive
+safety check chases an infeasible target straight through the operating
+envelope. The MPC's one-step lookahead-with-rejection prevents that at
+essentially no production cost — 15,884.7 vs. 18,880.5 barrels, and PI only
+"produces more" because it isn't stopping at the safety boundary. Full
+results: `outputs/baseline_comparison.csv`.*
+
+---
+
+### Slide 15 — Lessons Learned
+
+- **Report the model's real support region, not an aspirational one.** An
+  earlier draft claimed Scenario A's 15% start was "inside supported
+  territory." It wasn't — the extrapolation problem belongs to the
+  simulator's calibration, not the controller, and no amount of controller
+  tuning fixes a model guessing outside its fitted region.
+- **A correctly-specified model still shows real identification error.**
+  Even with the exact right functional form, 16–31% mean τ error persists —
+  most likely from finite dwell time relative to the now-larger true time
+  constants. A concrete, actionable lead (extend `DWELL_HOURS`), not a vague
+  "the model doesn't fit well."
+- **Name the controller accurately.** Calling this "brute-force MPC" implied
+  guarantees — recursive feasibility, trajectory optimality — it doesn't
+  have. It's a one-step receding-horizon search with hold-constant
+  prediction: empirically strong on safety, but not formally proven. Both
+  things are true; only naming it precisely lets a reader hold both.
+- **Report distributions, not single runs.** A single seed's "0 violations"
+  or "104.0 bbl/hr" is a point sample. The 30-seed sweep is what actually
+  supports a safety claim (Scenario B clean in all 30 seeds; Scenario A
+  violates in all 30) or a tracking claim (trailing 10-hour means, not one
+  timestamp).
+- **A correction layer earns its place by generalizing, or it doesn't
+  ship.** The hybrid correction currently helps nowhere, post-fix — reported
+  as a null result rather than removed or hidden, since the
+  validate-before-trust discipline is the actual point, not the RMSE number.
