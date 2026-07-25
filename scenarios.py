@@ -10,6 +10,7 @@ Scenario C - Infeasible Target: a 400 bbl/hr target exceeds what's achievable wi
 the safety limits; the controller should settle at the maximum safe rate instead.
 """
 
+import math
 import sys
 from pathlib import Path
 
@@ -72,9 +73,11 @@ def plot_scenario(name, title, df, limits):
                                     ["WHP (psi)", "FLP (psi)", "BHP (psi)"],
                                     ["WHP", "FLP", "BHP"]):
         ax.plot(df.Time_hr, df[col], color="tab:blue")
-        lo, hi = limits[key]
-        ax.axhline(lo, color="red", linestyle=":", linewidth=1)
-        ax.axhline(hi, color="red", linestyle=":", linewidth=1)
+        lo, hi = limits[key]  # one-sided limits use +-inf for "no bound that side"
+        if math.isfinite(lo):
+            ax.axhline(lo, color="red", linestyle=":", linewidth=1)
+        if math.isfinite(hi):
+            ax.axhline(hi, color="red", linestyle=":", linewidth=1)
         ax.set_ylabel(label)
 
     axes[4].step(df.Time_hr, df.Choke, where="post", color="black")

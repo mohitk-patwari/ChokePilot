@@ -29,15 +29,33 @@ def safety_limits_from_reference(csv_path, margin_frac=0.20, round_to=5.0):
 
     PLACEHOLDER -- DERIVED FROM SAMPLE DATA, NOT OFFICIAL LIMITS. Replace with the
     real operating envelope if/when one is specified.
+
+    Each channel is bounded on only the side that's actually a safety risk here --
+    a symmetric two-sided band would reject a high-WHP/high-BHP or low-FLP state that
+    is not actually unsafe, needlessly restricting achievable production:
     """
     df = pd.read_csv(csv_path)
-    limits = {}
+    lo_hi = {}
     for ch, col in [("WHP", "WHP_psi"), ("FLP", "FLP_psi"), ("BHP", "BHP_psi")]:
         lo, hi = df[col].min(), df[col].max()
         margin = margin_frac * (hi - lo)
-        lo_lim = round_to * math.floor((lo - margin) / round_to)
-        hi_lim = round_to * math.ceil((hi + margin) / round_to)
-        limits[ch] = (lo_lim, hi_lim)
+        lo_hi[ch] = (round_to * math.floor((lo - margin) / round_to),
+                     round_to * math.ceil((hi + margin) / round_to))
+
+    limits = {
+        # Brief: "If WHP becomes too low, the well may operate outside its
+        # recommended operating envelope." High WHP just means the choke is closed
+        # back further (safe, conservative) -- only the floor is an active risk.
+        "WHP": (lo_hi["WHP"][0], math.inf),
+        # Brief: BHP is "one of the most important indicators of reservoir health
+        # and drawdown" -- low BHP means excessive drawdown (sand/formation-damage
+        # risk); high BHP means low drawdown, i.e. safely choked back. Floor only.
+        "BHP": (lo_hi["BHP"][0], math.inf),
+        # Brief: FLP "helps ensure stable transportation of produced fluids" --
+        # the risk here is excess backpressure/separator overpressure on the high
+        # side; a low FLP isn't a hazard this challenge's envelope cares about.
+        "FLP": (-math.inf, lo_hi["FLP"][1]),
+    }
     return limits
 
 
@@ -165,7 +183,12 @@ def demo():
     assert new_u - 30.0 <= MAX_RAMP_PCT + 1e-9, "ramp-rate constraint violated"
     print(f"achievable-target case: {why}")
 
-    impossible_limits = {ch: (lo, lo + 0.01) for ch, (lo, hi) in limits.items()}
+    # An obviously-unreachable tight finite band for every channel, independent of
+    # whatever safety_limits_from_reference() produces -- WHP/BHP are lower-bounded
+    # only (hi=inf) and FLP is upper-bounded only (lo=-inf) now, so naively
+    # tightening around those real limits' finite side can hit +-inf and degenerate
+    # the comparison instead of exercising it.
+    impossible_limits = {ch: (1.0e6, 1.0e6 + 0.01) for ch in limits}
     ctrl2 = MPCController(model, impossible_limits)
     new_u2, why2 = ctrl2.decide(state, current_choke=30.0, target_q=150.0)
     assert 0.0 <= new_u2 <= 100.0
