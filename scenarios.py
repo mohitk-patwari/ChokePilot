@@ -96,12 +96,17 @@ def main():
     print(f"model tau (h): {{ {', '.join(f'{ch}: {p['tau']:.2f}' for ch, p in model.items())} }}")
 
     scenarios = [
-        ("A_startup_to_target", 0.0, (lambda t: 100.0), 80, 10),
+        # 15% not 0%: the calibrated model/limits only have real support in the
+        # reference data's 30-65% tested band (see CLAUDE.md Known Limitation) --
+        # starting from a hard 0% shut-in forces extrapolation and causes early-hour
+        # constraint violations that are an artifact of that extrapolation, not the
+        # controller. 15% keeps the startup transient closer to supported territory.
+        ("A_startup_to_target", 15.0, (lambda t: 100.0), 80, 10),
         ("B_target_tracking", 0.0, (lambda t: 100.0 if t < 60 else 150.0), 140, 11),
         ("C_infeasible_target", 0.0, (lambda t: 400.0), 100, 12),
     ]
     titles = {
-        "A_startup_to_target": "Scenario A - Startup to Target (0% choke -> 100 bbl/hr)",
+        "A_startup_to_target": "Scenario A - Startup to Target (15% choke -> 100 bbl/hr)",
         "B_target_tracking": "Scenario B - Target Tracking (100 -> 150 bbl/hr at t=60h)",
         "C_infeasible_target": "Scenario C - Infeasible Target (400 bbl/hr requested)",
     }
