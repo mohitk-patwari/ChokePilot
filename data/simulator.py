@@ -48,31 +48,62 @@ _CHANNEL_COLUMNS = {
 }
 
 
-def _fit_saturating(u, y, force_zero_at_u0=False):
+# uh grid: fine resolution 1-300 (original range) then log-spaced out to 50,000 so a
+# channel whose data is genuinely close to linear over the tested range (uh >> u,
+# i.e. u/(u+uh) ~ u/uh) has somewhere to go instead of pinning at an arbitrary cap.
+_UH_GRID = np.concatenate([np.linspace(1, 300, 300), np.geomspace(300, 50_000, 200)])
+
+
+def _steady_state_samples(u, y, tail_samples):
+    """Return only the last `tail_samples` of each constant-u dwell period -- the
+    samples closest to actually being at steady state -- so the steady-state map is
+    fit without transient contamination. Detects dwell boundaries generically from
+    wherever u changes, not from a hardcoded schedule."""
+    change_idx = np.flatnonzero(np.diff(u) != 0) + 1
+    seg_bounds = np.concatenate([[0], change_idx, [len(u)]])
+    mask = np.zeros(len(u), dtype=bool)
+    for s, e in zip(seg_bounds[:-1], seg_bounds[1:]):
+        mask[max(s, e - tail_samples):e] = True
+    return u[mask], y[mask]
+
+
+def _fit_saturating(u, y, force_zero_at_u0=False, tail_samples=6, label=None):
     """Least-squares fit of y = A + B * u / (u + uh) (or, if force_zero_at_u0, the
     pure Michaelis-Menten form y = B * u / (u + uh), A fixed at 0 -- for oil rate,
     where a fully shut choke must give zero flow, not an extrapolated intercept).
+
+    Fit only on the last `tail_samples` of each dwell period (steady-state samples),
+    not the whole trajectory -- otherwise transient (not-yet-settled) samples get
+    treated as if they were steady-state, biasing the fitted curve (and, downstream,
+    the dynamics fit that compensates for it -- see verify_identification.py).
 
     uh is found by 1-D grid search; A, B follow in closed form (ordinary linear
     regression) for each uh candidate -- a small brute-force + closed-form fit, no
     optimizer dependency needed.
     """
+    u_ss, y_ss = _steady_state_samples(u, y, tail_samples)
     best = None
-    for uh in np.linspace(1, 300, 300):
-        x = u / (u + uh)
+    for uh in _UH_GRID:
+        x = u_ss / (u_ss + uh)
         if force_zero_at_u0:
-            b = float(np.dot(x, y) / np.dot(x, x))
+            b = float(np.dot(x, y_ss) / np.dot(x, x))
             a = 0.0
-            resid = y - b * x
+            resid = y_ss - b * x
         else:
             design = np.column_stack([np.ones_like(x), x])
-            coef, *_ = np.linalg.lstsq(design, y, rcond=None)
+            coef, *_ = np.linalg.lstsq(design, y_ss, rcond=None)
             a, b = coef
-            resid = y - design @ coef
+            resid = y_ss - design @ coef
         sse = float(resid @ resid)
         if best is None or sse < best[0]:
             best = (sse, a, b, uh)
     _, a, b, uh = best
+    if uh >= 0.98 * _UH_GRID.max():
+        tag = f" ({label})" if label else ""
+        print(f"WARNING: uh{tag} pinned at grid boundary ({uh:.0f} >= 98% of "
+              f"{_UH_GRID.max():.0f}) -- uh is unidentifiable from this data; the "
+              f"steady-state response is statistically indistinguishable from linear "
+              f"over the tested choke range, not a resolvable saturation curve.")
     return a, b, uh
 
 
@@ -83,16 +114,19 @@ def _simulate_fopdt(u, y0, a, b, uh, tau, theta_steps, ts, clip_nonneg=False):
         y_ss = np.maximum(y_ss, 0.0)
     sim = np.empty(len(u))
     sim[0] = y0
-    alpha = ts / tau
+    # Exact zero-order-hold discretization of dy/dt = (y_ss - y)/tau over one sample
+    # interval with y_ss held constant during it -- unconditionally stable for any
+    # ts/tau ratio and exact (not a first-order approximation like alpha = ts/tau).
+    alpha = 1.0 - np.exp(-ts / tau)
     for k in range(len(u) - 1):
         sim[k + 1] = sim[k] + alpha * (y_ss[k] - sim[k])
     return sim
 
 
-def _fit_fopdt(u, y, ts, clip_nonneg=False):
+def _fit_fopdt(u, y, ts, clip_nonneg=False, label=None):
     """Grid-search tau (time constant, hours) and theta (dead time, whole samples)
     minimizing SSE between the recorded trajectory and the FOPDT recursion's."""
-    a, b, uh = _fit_saturating(u, y, force_zero_at_u0=clip_nonneg)
+    a, b, uh = _fit_saturating(u, y, force_zero_at_u0=clip_nonneg, label=label)
     best = None
     for theta_steps in range(0, 4):
         for tau in np.linspace(0.5, 20.0, 79):
@@ -114,18 +148,29 @@ def _calibrate():
     params = {}
     for ch, col in _CHANNEL_COLUMNS.items():
         y_hist = df[col].to_numpy(dtype=float)
-        params[ch] = _fit_fopdt(u_hist, y_hist, TS_HOURS, clip_nonneg=(ch == "Q"))
+        params[ch] = _fit_fopdt(u_hist, y_hist, TS_HOURS, clip_nonneg=(ch == "Q"), label=ch)
     return params
 
 
 PARAMS = _calibrate()  # calibrated once at import time, ~1s
 
 
-def steady_state(channel, u):
-    """y_ss(u) for one channel -- used by controller.py's internal prediction model."""
-    p = PARAMS[channel]
+def steady_state_from_params(p, u, correction_coefs=None):
+    """The one canonical y_ss(u) formula: physics steady-state map, optionally plus a
+    small learned correction(u) (see identify.py's fit_residual_correction).
+    correction_coefs=None means physics-only. Single shared implementation --
+    imported by controller.py and identify.py -- so there's exactly one place that
+    can disagree with itself about whether/how correction is applied."""
     y = p["A"] + p["B"] * u / (u + p["uh"])
+    if correction_coefs is not None:
+        y += float(np.polyval(correction_coefs, u))
     return max(0.0, y) if p["clip_nonneg"] else y
+
+
+def steady_state(channel, u):
+    """y_ss(u) for one channel of the plant's OWN calibration -- physics-only by
+    design (the true plant has no "learned correction", that's a model concept)."""
+    return steady_state_from_params(PARAMS[channel], u)
 
 
 class Simulator:
@@ -165,7 +210,7 @@ class Simulator:
             idx = max(0, len(self._u_history) - 1 - p["theta_steps"])
             u_eff = self._u_history[idx]
             y_ss = steady_state(ch, u_eff)
-            alpha = TS_HOURS / p["tau"]
+            alpha = 1.0 - np.exp(-TS_HOURS / p["tau"])  # exact ZOH, see _simulate_fopdt
             self._true_state[ch] = self._true_state[ch] + alpha * (y_ss - self._true_state[ch])
         return self._read()
 

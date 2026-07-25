@@ -37,7 +37,17 @@ def solve_choke_for_q(model, target_q):
     ramp (same reasoning as Scenario A's fix; see CLAUDE.md Known Limitation)."""
     p = model["Q"]
     y = target_q - p["A"]
-    u = y * p["uh"] / (p["B"] - y)
+    denom = p["B"] - y
+    if denom <= 0:
+        # target_q is at or beyond the curve's asymptote (A+B) -- no finite choke
+        # reaches it. The naive formula would return a *negative* u, which clips to
+        # 0.0 (fully closed): exactly backwards, since this only happens when the
+        # target is too HIGH. Clip to 100% (max open) instead.
+        print(f"WARNING: solve_choke_for_q({target_q}) is at/beyond the model's Q "
+              f"asymptote ({p['A'] + p['B']:.1f} bbl/hr) -- no finite choke reaches it; "
+              f"returning 100% (max open) instead of a spurious closed-choke solution.")
+        return 100.0
+    u = y * p["uh"] / denom
     return max(0.0, min(100.0, u))
 
 
@@ -52,6 +62,7 @@ def run_scenario(name, initial_choke, target_fn, hours, model, limits, sim_seed,
         target = target_fn(t)
         state = {"Q": q, "WHP": whp, "FLP": flp, "BHP": bhp}
         choke, explanation = ctrl.decide(state, choke, target)
+        ctrl.commit(choke)
         q, whp, flp, bhp = sim.step(choke)
         rows.append((t, target, q, whp, flp, bhp, choke, explanation))
 

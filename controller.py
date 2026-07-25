@@ -14,9 +14,14 @@ this acceptable.
 """
 
 import math
+import sys
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
+
+sys.path.insert(0, str(Path(__file__).parent / "data"))
+from simulator import steady_state_from_params  # noqa: E402
 
 CHOKE_MIN, CHOKE_MAX = 0.0, 100.0
 MAX_RAMP_PCT = 5.0  # hard constraint: max |choke change| per control interval
@@ -59,16 +64,6 @@ def safety_limits_from_reference(csv_path, margin_frac=0.20, round_to=5.0):
     return limits
 
 
-def _steady_state(p, u, correction_coefs=None):
-    """Physics steady-state map, optionally plus a small learned correction(u) --
-    see identify.py's fit_residual_correction. correction_coefs is None wherever
-    that correction didn't demonstrably reduce held-out error (physics-only then)."""
-    y = p["A"] + p["B"] * u / (u + p["uh"])
-    if correction_coefs is not None:
-        y += float(np.polyval(correction_coefs, u))
-    return max(0.0, y) if p["clip_nonneg"] else y
-
-
 def _predict_horizon(model, state, u_history, new_u, horizon, ts, correction=None):
     """Simulate `horizon` steps ahead: apply new_u this interval, then hold it there.
     Returns {channel: array of length horizon} of predicted values."""
@@ -80,7 +75,7 @@ def _predict_horizon(model, state, u_history, new_u, horizon, ts, correction=Non
     for k in range(horizon):
         for ch, p in model.items():
             idx = max(0, base_len + k - p["theta_steps"])
-            y_ss = _steady_state(p, u_seq[idx], correction.get(ch))
+            y_ss = steady_state_from_params(p, u_seq[idx], correction.get(ch))
             alpha = ts / p["tau"]
             cur[ch] = cur[ch] + alpha * (y_ss - cur[ch])
             preds[ch][k] = cur[ch]
@@ -117,15 +112,28 @@ class MPCController:
         self.u_history = []  # actual applied choke positions, for dead-time lookback
 
     def decide(self, state, current_choke, target_q):
-        """state: dict with current Q, WHP, FLP, BHP readings.
-        Returns (new_choke_position, one_sentence_explanation)."""
-        if not self.u_history:
-            self.u_history = [current_choke]
+        """Pure -- does not mutate controller state (safe to call speculatively,
+        e.g. for a what-if check, without corrupting anything). state: dict with
+        current Q, WHP, FLP, BHP readings. Returns (new_choke_position,
+        one_sentence_explanation). Call commit(new_choke_position) once you've
+        actually applied the move, so the next decide() call's dead-time lookback
+        reflects what really happened -- calling decide() again without committing
+        (or committing twice) previously corrupted u_history; now it's on the
+        caller only if they skip commit() entirely.
+        """
+        # u_history should already end in current_choke (the caller committed the
+        # last move), but on the very first call ever nothing has been committed --
+        # fall back to a local seed for this call only, without writing to self.
+        u_history = self.u_history if self.u_history else [current_choke]
 
         results = []
         for delta in CANDIDATE_DELTAS:
-            new_u = float(np.clip(current_choke + delta, CHOKE_MIN, CHOKE_MAX))
-            preds = _predict_horizon(self.model, state, self.u_history, new_u, self.horizon,
+            # Round to 0.1% here, before it's used for prediction/selection/logging,
+            # so the value that gets predicted against, applied, and quoted in the
+            # rationale string below are all the exact same number -- not a full-
+            # precision float that then gets displayed rounded to a different value.
+            new_u = round(float(np.clip(current_choke + delta, CHOKE_MIN, CHOKE_MAX)), 1)
+            preds = _predict_horizon(self.model, state, u_history, new_u, self.horizon,
                                       self.ts, self.correction)
             violation = 0.0
             for ch in ("WHP", "FLP", "BHP"):
@@ -143,7 +151,7 @@ class MPCController:
         if feasible:
             chosen = min(feasible, key=lambda r: (r["q_err"], abs(r["new_u"] - current_choke)))
             explanation = (
-                f"Moved choke to {chosen['new_u']:.0f}% because it keeps WHP/FLP/BHP within "
+                f"Moved choke to {chosen['new_u']:.1f}% because it keeps WHP/FLP/BHP within "
                 f"safe limits over the next {self.horizon}h and brings predicted oil rate to "
                 f"{chosen['q_end']:.1f} bbl/hr, closest to the {target_q:.1f} bbl/hr target "
                 f"among {len(feasible)} feasible options."
@@ -152,12 +160,17 @@ class MPCController:
             chosen = min(results, key=lambda r: (r["violation"], abs(r["new_u"] - current_choke)))
             explanation = (
                 f"No choke move keeps all limits satisfied over the lookahead; moved to "
-                f"{chosen['new_u']:.0f}% because it minimizes the predicted constraint "
+                f"{chosen['new_u']:.1f}% because it minimizes the predicted constraint "
                 f"violation ({chosen['violation']:.1f} psi-steps over horizon)."
             )
 
-        self.u_history.append(chosen["new_u"])
         return chosen["new_u"], explanation
+
+    def commit(self, applied_choke):
+        """Record a choke move that was actually applied, into the dead-time
+        lookback history. Call this exactly once per control interval, after
+        applying decide()'s chosen move."""
+        self.u_history.append(round(float(applied_choke), 1))
 
 
 def demo():
@@ -178,7 +191,17 @@ def demo():
 
     ctrl = MPCController(model, limits)
     state = {"Q": 90.0, "WHP": 260.0, "FLP": 185.0, "BHP": 3050.0}
-    new_u, why = ctrl.decide(state, current_choke=30.0, target_q=150.0)
+
+    # decide() must be pure: calling it twice with identical inputs, without an
+    # intervening commit(), has to return the identical result -- this is exactly
+    # the case that used to corrupt u_history (each call appended a second, bogus
+    # entry) and would have made these two calls disagree.
+    new_u_a, why_a = ctrl.decide(state, current_choke=30.0, target_q=150.0)
+    new_u_b, why_b = ctrl.decide(state, current_choke=30.0, target_q=150.0)
+    assert new_u_a == new_u_b and why_a == why_b, "decide() is not pure -- repeat call diverged"
+
+    new_u, why = new_u_a, why_a
+    ctrl.commit(new_u)
     assert new_u > 30.0, "expected controller to open the choke toward an achievable higher target"
     assert new_u - 30.0 <= MAX_RAMP_PCT + 1e-9, "ramp-rate constraint violated"
     print(f"achievable-target case: {why}")
@@ -191,6 +214,7 @@ def demo():
     impossible_limits = {ch: (1.0e6, 1.0e6 + 0.01) for ch in limits}
     ctrl2 = MPCController(model, impossible_limits)
     new_u2, why2 = ctrl2.decide(state, current_choke=30.0, target_q=150.0)
+    ctrl2.commit(new_u2)
     assert 0.0 <= new_u2 <= 100.0
     assert abs(new_u2 - 30.0) <= MAX_RAMP_PCT + 1e-9
     print(f"impossible-limits case: {why2}")

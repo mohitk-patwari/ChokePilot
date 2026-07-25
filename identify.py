@@ -18,7 +18,9 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 sys.path.insert(0, str(Path(__file__).parent / "data"))
-from simulator import Simulator, TS_HOURS, _fit_fopdt, _simulate_fopdt  # noqa: E402
+from simulator import (  # noqa: E402
+    Simulator, TS_HOURS, _fit_fopdt, _simulate_fopdt, steady_state_from_params,
+)
 
 OUTPUT_DIR = Path(__file__).parent / "outputs"
 OUTPUT_DIR.mkdir(exist_ok=True)
@@ -70,18 +72,9 @@ def identify_model(df):
     return model
 
 
-def steady_state_with_correction(p, u, correction_coefs):
-    """Physics steady-state map plus a small additive correction(u). correction_coefs
-    is None for "no correction" (plain physics)."""
-    y = p["A"] + p["B"] * u / (u + p["uh"])
-    if correction_coefs is not None:
-        y += float(np.polyval(correction_coefs, u))
-    return max(0.0, y) if p["clip_nonneg"] else y
-
-
 def _simulate_with_correction(u, y0, p, correction_coefs, ts):
     u_delayed = np.concatenate([np.full(p["theta_steps"], u[0]), u])[: len(u)]
-    y_ss = np.array([steady_state_with_correction(p, uu, correction_coefs) for uu in u_delayed])
+    y_ss = np.array([steady_state_from_params(p, uu, correction_coefs) for uu in u_delayed])
     sim = np.empty(len(u))
     sim[0] = y0
     alpha = ts / p["tau"]
