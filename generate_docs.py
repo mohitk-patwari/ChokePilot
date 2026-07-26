@@ -1,16 +1,19 @@
 """
 Regenerates the numeric tables in README.md, docs/report.md, and docs/presentation.md
-from outputs/results.json -- the single source scenarios.py, baselines.py, and
-verify_identification.py write into (see results_io.py). This is the fix for those
-three documents' numbers disagreeing with each other and with the shipped CSVs: every
-table below is rendered from the same JSON, not retyped by hand in three places.
+from outputs/results.json -- the single source scenarios.py, baselines.py,
+verify_identification.py, and seed_sweep.py all write into (see results_io.py). This
+is the fix for those three documents' numbers disagreeing with each other and with
+the shipped CSVs: every table below is rendered from the same JSON, not retyped by
+hand in three places.
 
 Each doc keeps its hand-written analysis prose untouched. Only the content between
 matched `<!-- GENERATED:key -->` / `<!-- END GENERATED -->` marker comments is
-replaced, so this never touches narrative reasoning, only tables/inline numbers that
-actually came from a pipeline run. Scenario D and the 30-seed sweep are NOT sourced
-here -- only scenarios.py/baselines.py/verify_identification.py write to results.json
-(scenario_d.py and seed_sweep.py don't), so those sections remain hand-maintained.
+replaced, so this never touches narrative reasoning, only tables that actually came
+from a pipeline run. Scenario D is NOT sourced here -- scenario_d.py doesn't write to
+results.json (a 200h run per approach is a different cost profile than the other
+scripts; not yet worth the wiring) -- so Scenario D's numbers remain hand-maintained
+wherever they appear, and are re-verified against a fresh `python scenario_d.py` run
+before being typed in, not carried over from memory.
 """
 
 import re
@@ -110,6 +113,18 @@ def baseline_comparison_table_abc(results):
     return "\n".join(rows)
 
 
+def seed_sweep_table(results):
+    rows = ["| Scenario | Mean violations | Max violations | Seeds with ≥1 violation | Mean safety-fallback rate |",
+            "|---|---|---|---|---|"]
+    for key in SCENARIO_ORDER:
+        s = results["seed_sweep"][key]
+        n = s["n_seeds"]
+        rows.append(f"| {key} | {s['mean_violations']:.2f} / {results['scenarios'][key]['total_steps']} "
+                    f"| {s['max_violations']} | {s['seeds_with_violation']} / {n} "
+                    f"| {s['mean_fallback_pct']:.2f}% |")
+    return "\n".join(rows)
+
+
 RENDERERS = {
     "identification_table": identification_table,
     "correction_table": correction_table,
@@ -117,6 +132,7 @@ RENDERERS = {
     "scenario_key_results_table": scenario_key_results_table,
     "actuator_activity_table": actuator_activity_table,
     "baseline_comparison_table_abc": baseline_comparison_table_abc,
+    "seed_sweep_table": seed_sweep_table,
 }
 
 _MARKER_RE = re.compile(r"<!-- GENERATED:(\w+) -->.*?<!-- END GENERATED -->", re.DOTALL)

@@ -5,8 +5,11 @@ to check whether Scenario A's known residual violations (and how often the contr
 falls back to the "no fully feasible candidate" branch) are a stable, seed-independent
 finding or an artifact of the one noise draw scenarios.py happens to use by default.
 
-Does not commit or touch scenarios.py's own default-seed outputs -- writes only to
-outputs/seed_sweep_results.csv.
+Does not touch scenarios.py's own default-seed outputs -- writes the full per-seed
+table to outputs/seed_sweep_results.csv and the summary stats into
+outputs/results.json (under "seed_sweep") so README.md/docs/report.md/
+docs/presentation.md can render this table via generate_docs.py instead of a
+hand-typed copy that drifts out of sync with a fresh run.
 """
 
 import sys
@@ -22,6 +25,7 @@ from identify import (  # noqa: E402
 )
 from controller import safety_limits_from_reference  # noqa: E402
 from scenarios import run_scenario, solve_choke_for_q, count_violations, CSV_PATH  # noqa: E402
+from results_io import update_results  # noqa: E402
 
 OUTPUT_DIR = Path(__file__).parent / "outputs"
 OUTPUT_DIR.mkdir(exist_ok=True)
@@ -72,11 +76,19 @@ def main():
     header = f"{'scenario':<22} {'mean_viol':>9} {'max_viol':>8} {'seeds>=1viol':>13} {'mean_fallback%':>15}"
     print(header)
     print("-" * len(header))
+    short_name = {"A_startup_to_target": "A", "B_target_tracking": "B", "C_infeasible_target": "C"}
+    sweep_json = {}
     for name, _, _, _ in scenario_defs:
         sub = results[results.scenario == name]
         n_with_viol = int((sub.violations >= 1).sum())
         print(f"{name:<22} {sub.violations.mean():>9.2f} {sub.violations.max():>8d} "
               f"{n_with_viol:>10d}/{len(sub):<3d}{100 * sub.fallback_frac.mean():>14.2f}%")
+        sweep_json[short_name[name]] = {
+            "n_seeds": len(sub), "mean_violations": float(sub.violations.mean()),
+            "max_violations": int(sub.violations.max()), "seeds_with_violation": n_with_viol,
+            "mean_fallback_pct": float(100 * sub.fallback_frac.mean()),
+        }
+    update_results("seed_sweep", sweep_json)
 
 
 if __name__ == "__main__":

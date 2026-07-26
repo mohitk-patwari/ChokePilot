@@ -191,5 +191,28 @@
       "trailing_10h_mean_q": 162.7563972646048,
       "violations": 0
     }
+  },
+  "seed_sweep": {
+    "A": {
+      "max_violations": 5,
+      "mean_fallback_pct": 8.583333333333334,
+      "mean_violations": 3.966666666666667,
+      "n_seeds": 30,
+      "seeds_with_violation": 30
+    },
+    "B": {
+      "max_violations": 0,
+      "mean_fallback_pct": 0.0,
+      "mean_violations": 0.0,
+      "n_seeds": 30,
+      "seeds_with_violation": 0
+    },
+    "C": {
+      "max_violations": 0,
+      "mean_fallback_pct": 23.566666666666674,
+      "mean_violations": 0.0,
+      "n_seeds": 30,
+      "seeds_with_violation": 0
+    }
   }
 }

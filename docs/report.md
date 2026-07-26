@@ -1,27 +1,16 @@
 # ChokePilot — Autonomous Choke Controller
 
-*Regenerated from a fresh, post-fix pipeline run. Every number below comes from
-actually executing `identify.py`, `verify_identification.py`, `scenarios.py`,
-`seed_sweep.py`, and `baselines.py` against the current code — none are carried
-over from an earlier draft.*
-
-**STALE, flagged not silently fixed:** §1.2's τ/θ table and §3.2/3.3's exact
-percentages predate two fixes that changed the underlying numbers slightly
-(their headline conclusions are unaffected, but the specific figures are not
-current): (1) a one-sample lag between `_simulate_fopdt` and `Simulator.step()`
-that biased every identified τ/θ (θ now matches true θ exactly; τ error
-dropped further, e.g. Q's "unexplained" ~19% bias resolved to ~3%), and (2) a
-move-suppression fix to `MPCController.decide()` (§3.4) that changed Scenario
-A/B/C's exact trajectories. §2.3, §3.1, §3.4, §3.6, and §3.7's Lessons Learned
-are current as of this revision — §2.3/3.1 were rewritten from scratch after
-finding an actual error (Scenario A's violations were misattributed to
-"extrapolation," not the deterministic FLP-ceiling cause identified here), and
-§3.6 now includes Scenario D and the Fixed-operator-proxy baseline, with a
-corrected headline: MPC ties Fixed-optimal in all four scenarios (including
-D, which was built to find a difference and didn't) — the real, consistent
-win is envelope-awareness itself vs. the operator-proxy, not live re-planning
-vs. a static setpoint. A full re-sync of §1.2 and §3.2/3.3 against both
-earlier fixes remains a follow-up.
+*Every table in this document marked `<!-- GENERATED -->` is rendered directly
+from `outputs/results.json` by `generate_docs.py`, from one fresh run of
+`identify.py` → `verify_identification.py` → `scenarios.py` → `baselines.py` →
+`seed_sweep.py` — not hand-typed, and not carried over from an earlier draft.
+Scenario D (§3.6) has no marker — `scenario_d.py` doesn't write to
+`results.json` (a 200h run per approach is a different cost profile than the
+other scripts; not yet worth the wiring) — so its numbers are hand-maintained,
+but re-verified against a fresh `python scenario_d.py` run before being typed
+in, not carried over from memory.
+Prose sections narrate the reasoning and are written by hand, but are checked
+against the same fresh run before publishing.*
 
 ## 0. Why this exists
 
@@ -103,8 +92,8 @@ uncertainty without a formal error bar attached to it.
 Per the brief ("students are expected to generate their own data using the
 simulator"), `identify.py` does not reuse the reference CSV for model
 identification. It drives its own monotonic staircase — 0/10/20/…/100% choke,
-24 hours dwell per step — against the calibrated simulator, and fits an FOPDT
-model to that fresh run.
+40 hours dwell per step (`DWELL_HOURS`, see §1.2's dwell-time history below) —
+against the calibrated simulator, and fits an FOPDT model to that fresh run.
 
 **Reframing a claim from an earlier draft:** `identify.py` imports `_fit_fopdt`
 and `_simulate_fopdt` directly from `data/simulator.py` — the *same* private
@@ -121,58 +110,89 @@ knows the exact right functional form), `verify_identification.py` shows real
 error recovering the simulator's own ground-truth parameters from a fresh, noisy
 step test, across 5 seeds (0, 1, 2, 7, 99):
 
+<!-- GENERATED:identification_table -->
 | Channel | True τ (h) | Mean identified τ (h) | Mean error | Error range |
 |---|---|---|---|---|
-| Q | 5.00 | 4.05 | 19.0% | 15.0–25.0% |
+| BHP | 9.00 | 8.25 | 8.3% | 2.8–13.9% |
+| FLP | 7.00 | 6.95 | 3.6% | 0.0–7.1% |
+| Q | 5.00 | 4.95 | 3.0% | 0.0–5.0% |
 | WHP | 7.50 | 7.20 | 4.0% | 0.0–6.7% |
-| FLP | 7.00 | 6.05 | 13.6% | 10.7–17.9% |
-| BHP | 9.00 | 8.30 | 7.8% | 2.8–11.1% |
+<!-- END GENERATED -->
 
-**This table reflects a fix that was tested and confirmed, not just hypothesized.**
-An earlier version of this experiment used a 24h dwell per step and showed mean τ
-error of Q 20% / WHP 16% / FLP 27% / BHP 31%, with identified τ lower than true τ
-in all 20/20 seed×channel combinations — a one-directional bias consistent with
-insufficient settling time (BHP's true τ=9h, θ=2h needs roughly 4τ+θ ≈ 38h to
-settle, well past a 24h dwell). Raising `DWELL_HOURS` from 24 to 40 directly
-confirms that diagnosis for three of the four channels: WHP's error dropped
-16.0%→4.0%, FLP's 27.1%→13.6%, BHP's 31.1%→7.8%.
+θ (dead time) now matches the true value **exactly in every one of the 20
+seed×channel combinations** — no residual off-by-one anywhere. This table is the
+result of two separate, sequential fixes, both tested and confirmed rather than
+just hypothesized:
 
-**Q did not improve (20.0%→19.0%, within noise of unchanged) and stays the
-largest residual.** Since Q's identification is unaffected by dwell time across
-every value tested (24–80h, per `identify.py`'s own investigation), its error has
-a different, still-unidentified cause — plausibly related to Q's steady-state map
-being fit through a forced zero at u=0 (the one channel with `force_zero_at_u0`),
-constraining the curve shape in a way the others aren't. This is reported as a
-genuine open question, not swept into the same explanation as the other three.
+**Fix 1 — dwell time (`DWELL_HOURS` 24→40).** An earlier version of this
+experiment used a 24h dwell per step and showed mean τ error of Q 20% / WHP 16%
+/ FLP 27% / BHP 31%, with identified τ lower than true τ in all 20/20
+seed×channel combinations — a one-directional bias consistent with insufficient
+settling time (BHP's true τ=9h, θ=2h needs roughly 4τ+θ ≈ 38h to settle, well
+past a 24h dwell). Raising `DWELL_HOURS` to 40 confirmed that diagnosis for
+three of the four channels (WHP's error dropped 16.0%→4.0%, FLP's 27.1%→13.6%,
+BHP's 31.1%→7.8%) and, just as usefully, **ruled it out for Q** (20.0%→19.0%,
+unchanged across every dwell length tested, 24–80h) — leaving Q's bias correctly
+reported as a separate, still-open question at that point, not folded into an
+explanation that didn't actually cover it.
 
-Dead-time identification is tight: Q and FLP match the true θ exactly in every
-seed; WHP and BHP are consistently off by exactly 1 sample — a small, explainable
-residual, unchanged by the dwell-time fix.
+**Fix 2 — a one-sample lag between the fitting code and the live simulator.**
+`_simulate_fopdt` (used both to calibrate `data/simulator.py` and to fit
+`identify.py`'s step-test data) drove `sim[k+1]` from `y_ss[k]` — i.e. from
+`u[k-θ]` — but `Simulator.step()` actually drives the state arriving at sample
+`t` from `u[t-θ]`, the *same* time index as the arrival sample, not one behind
+it. That's a real, structural one-sample lag between what the fitting code
+assumed and what the live plant does, not a hypothesis — confirmed by tracing
+both code paths' indexing by hand and verifying the fixed version reproduces
+`Simulator.step()`'s own trajectory exactly. Fixed by changing `y_ss[k]` to
+`y_ss[k+1]` in `_simulate_fopdt` (and the identical bug, plus a missed
+Euler-vs-ZOH inconsistency, in `identify.py`'s `_simulate_with_correction`).
 
-### 1.3 Hybrid physics + learned correction — helps exactly one channel, and only that one is used
+This fix is what **resolved Q's "still-open question" from Fix 1**: Q's error
+dropped 19.0%→3.0%, and θ went from matching exactly for only 2 of 4 channels
+(Q, FLP) — with WHP and BHP consistently off by exactly 1 sample — to matching
+exactly for all 4. Recalibrating `simulator.py`'s own ground-truth `PARAMS` with
+the same fix (it shares the same fitting function) shifted the "true" θ values
+themselves by +1 across the board (Q/WHP/FLP/BHP: 0/1/0/2 → 1/2/1/3; τ
+unchanged) — the reference calibration had been carrying the identical
+one-sample bias the whole time, which is why the pre-fix identified θ values
+had looked "off by exactly 1" instead of scattered: both sides of the
+comparison were shifted the same way.
+
+**BHP is now the largest residual (8.3%), not Q** — a direct consequence of Fix
+2 resolving Q's bias while leaving BHP's roughly where it was. BHP's own
+possible explanation is in §1.3.
+
+### 1.3 Hybrid physics + learned correction — three of four channels earn their place
 
 `identify.py` also fits a small degree-1 polynomial-in-choke correction on the
 residual the physics FOPDT model leaves on a step test, validated on a **held-out**
 step test (different noise draw) before being trusted for use:
 
+<!-- GENERATED:correction_table -->
 | Channel | Physics-only RMSE | +Correction RMSE | Kept? |
 |---|---|---|---|
-| Q | 1.85 | 1.90 | ❌ skipped |
-| WHP | 1.30 | 1.35 | ❌ skipped |
-| FLP | 0.96 | 0.97 | ❌ skipped |
-| BHP | 9.84 | 9.80 | ✅ **used** |
+| BHP | 9.85 | 9.81 | ✅ **used** |
+| FLP | 0.92 | 0.89 | ✅ **used** |
+| Q | 1.66 | 1.63 | ✅ **used** |
+| WHP | 1.30 | 1.30 | ❌ skipped |
+<!-- END GENERATED -->
 
-After the steady-state re-fit, ZOH discretization, and 40h-dwell fixes (§1.1,
-§1.2), the physics-only fit is tight enough on Q/WHP/FLP that the correction layer
-doesn't generalize for them. BHP is the exception: it still has enough residual
-structure the physics fit alone doesn't capture that the correction earns its
-place on held-out data, so it's the one channel actually running physics+correction
-in the controller's prediction. `select_beneficial_corrections()` makes this
-decision automatically per channel, purely from held-out RMSE — nothing is
-hand-picked. Given BHP is also the channel with the largest remaining τ
-identification error (§1.2), it's plausible the correction is partly absorbing
-that residual dynamics mismatch rather than a separate steady-state curvature
-effect; this pipeline can't distinguish the two.
+This table changed shape after the Tier-0 one-sample-lag fix (§1.2): with the
+old, laggy `_simulate_fopdt`, only BHP's correction generalized to held-out
+data. Post-fix, the physics-only residual on Q, FLP, and BHP each still has
+enough structure the correction layer captures — small in absolute RMSE terms
+for Q/FLP, but consistent enough across the held-out draw that
+`select_beneficial_corrections()` keeps all three. **WHP is now the only
+channel where the correction doesn't earn its place** (RMSE goes from 1.296 to
+1.304, i.e. very slightly worse on held-out data), so it's the one channel
+still running physics-only in the controller's prediction. This decision is
+made automatically per channel, purely from held-out RMSE — nothing here is
+hand-picked. BHP remains the channel with both the largest remaining τ
+identification error (§1.2) and the largest absolute correction RMSE; it's
+plausible the correction is partly absorbing residual dynamics mismatch rather
+than a separate steady-state curvature effect, but this pipeline can't
+distinguish the two.
 
 ### 1.4 Safety limits are one-sided, not symmetric bands
 
@@ -180,11 +200,13 @@ The brief specifies no numeric WHP/FLP/BHP limits, so they're derived — a
 placeholder, not an official spec — from the reference CSV's observed range,
 ±20% margin:
 
+<!-- GENERATED:safety_limits_table -->
 | Channel | Direction enforced | Limit | Brief basis |
 |---|---|---|---|
 | WHP | floor only (`hi = +inf`) | ≥ 205 psi | *"If WHP becomes too low, the well may operate outside its recommended operating envelope."* High WHP just means the choke is closed back further — safe, not a hazard. |
 | BHP | floor only (`hi = +inf`) | ≥ 2830 psi | Brief calls it *"one of the most important indicators of reservoir health and drawdown"* — low BHP means excessive drawdown (sand/formation-damage risk); high BHP means low drawdown, i.e. safely choked back. |
 | FLP | ceiling only (`lo = -inf`) | ≤ 200 psi | Brief: *"helps ensure stable transportation of produced fluids"* — the risk is backpressure/separator overpressure on the high side, not a low reading. |
+<!-- END GENERATED -->
 
 An earlier draft bracketed all three symmetrically, which could reject a
 high-WHP/high-BHP or low-FLP state that isn't actually unsafe. These are further
@@ -243,7 +265,7 @@ recursive feasibility check — no proof that choosing today's "safe" candidate
 guarantees a safe candidate will still exist at every future step, and no
 terminal invariant set the way a formally verified MPC would require. The
 empirical evidence in §3.5 (a 30-seed sweep) shows the safety-fallback branch
-firing at a non-trivial rate in Scenario C (15.9% of steps) precisely because the
+firing at a non-trivial rate in Scenario C (23.6% of steps) precisely because the
 controller is operating at the edge of what the model considers feasible with no
 formal guarantee behind it — only a greedy, per-step search that has worked well
 empirically on this system's dynamics.
@@ -334,7 +356,7 @@ single run.
   steady 34.0% choke.
 - **Safety, single-seed:** 4/80 constraint samples outside limits.
 - **Safety, honest (30-seed sweep, see §3.5):** every single seed shows at least
-  one violation (30/30), mean 2.67/80 steps, max 4/80.
+  one violation (30/30), mean 3.97/80 steps, max 5/80.
 - **Why, precisely (see §2.3):** this is not an "extrapolation artifact" — it's
   a deterministic consequence of the identified FLP steady-state curve exceeding
   the 200 psi ceiling below ~19% choke, combined with the ±5%/interval ramp
@@ -363,17 +385,16 @@ single run.
 ### 3.3 Scenario C — Infeasible Target (34.2% choke start, 400 bbl/hr requested, 100h)
 
 - **Behavior:** does not chase the infeasible target into a violation. Trailing
-  10-hour mean **162.21 bbl/hr** at 68.9% choke — the maximum rate the tightened
+  10-hour mean **162.76 bbl/hr** at 69.4% choke — the maximum rate the tightened
   envelope allows, not 400.
 - **Safety, single-seed:** 0/100. **30-seed sweep: 0/100 in all 30 seeds** — fully
-  clean, an improvement over an earlier (pre-40h-dwell) run of this same sweep
-  that showed a rare 1-violation residual in 2/30 seeds.
-- **Safety-fallback frequency:** 15.9% of steps (see §3.5) — still far higher than
-  A or B, because this scenario deliberately runs the choke near the edge of the
+  clean.
+- **Safety-fallback frequency:** 23.6% of steps (see §3.5) — far higher than A or
+  B, because this scenario deliberately runs the choke near the edge of the
   tightened feasible envelope for its entire duration. Frequent fallback here is
-  expected behavior, not a red flag; it dropped from an earlier 23.6% alongside
-  the tighter identified model, consistent with the controller needing the
-  least-bad fallback less often when its predictions are more accurate.
+  expected behavior, not a red flag: with 0 actual safety violations, the
+  fallback branch is doing its job (picking the least-bad option under a
+  flipping feasible set — see §3.4's root-cause discussion), not failing to.
 
 ### 3.4 Actuator activity: valve travel and move count
 
@@ -386,7 +407,7 @@ adding a move-suppression term to both branches' cost:
 
 - Feasible branch: `cost = q_err + λ·|Δu|` (was: sort purely by `q_err`).
 - Safety-fallback branch: `cost = violation + λ·|Δu|` (was: sort purely by
-  `violation`) — added for the same reason; Scenario C spends 15.9–23% of its
+  `violation`) — added for the same reason; Scenario C spends 23.6% of its
   steps in this branch (§3.5), so it chatters just as easily if left unweighted.
 
 `λ = 1.0` bbl/hr of predicted improvement required per %-point moved (a 1%
@@ -422,11 +443,13 @@ for here and hasn't been tried.
 
 ### 3.5 Seed-sweep distribution (30 seeds per scenario, `seed_sweep.py`)
 
+<!-- GENERATED:seed_sweep_table -->
 | Scenario | Mean violations | Max violations | Seeds with ≥1 violation | Mean safety-fallback rate |
 |---|---|---|---|---|
-| A — Startup to Target | 2.67 / 80 | 4 | 30 / 30 | 4.67% |
-| B — Target Tracking | 0.00 / 140 | 0 | 0 / 30 | 0.00% |
-| C — Infeasible Target | 0.00 / 100 | 0 | 0 / 30 | 15.90% |
+| A | 3.97 / 80 | 5 | 30 / 30 | 8.58% |
+| B | 0.00 / 140 | 0 | 0 / 30 | 0.00% |
+| C | 0.00 / 100 | 0 | 0 / 30 | 23.57% |
+<!-- END GENERATED -->
 
 Full per-seed results: `outputs/seed_sweep_results.csv`.
 
@@ -459,23 +482,44 @@ steady-state offset drifts −0.5 psi/h for 200h (reservoir decline) at a consta
 starts, and never updated — realistic to how a real deployment re-identifies
 occasionally, not continuously.
 
+<!-- GENERATED:baseline_comparison_table_abc -->
+| Scenario | Approach | Safety violations | Total barrels |
+|---|---|---|---|
+| A | MPC | 4/80 | 7,590.4 |
+| A | Fixed-optimal | 3/80 | 7,657.6 |
+| A | Fixed-operator-proxy | 66/80 | 4,852.4 |
+| A | PI | 3/80 | 7,652.1 |
+| B | MPC | 0/140 | 17,676.4 |
+| B | Fixed-optimal | 0/140 | 17,642.0 |
+| B | Fixed-operator-proxy | 23/140 | 13,824.5 |
+| B | PI | 0/140 | 17,591.0 |
+| C | MPC | 0/100 | 15,806.2 |
+| C | Fixed-optimal | 0/100 | 15,769.0 |
+| C | Fixed-operator-proxy | 85/100 | 18,778.3 |
+| C | PI | 85/100 | 18,778.3 |
+<!-- END GENERATED -->
+
+Scenario D (`scenario_d.py`) isn't in `results.json` — a 200h run per approach
+is a different cost profile than the scripts above, not yet worth the wiring —
+so its row is hand-maintained here, re-verified against a fresh
+`python scenario_d.py` run before being typed in:
+
 | Scenario | Approach | Safety violations | Total barrels | Time-to-first-violation |
 |---|---|---|---|---|
-| A | MPC | 4/80 | 7590.4 | — |
-| A | Fixed-optimal | 3/80 | 7657.6 | — |
-| A | Fixed-operator-proxy | **66/80** | 4852.4 | — |
-| A | PI | 3/80 | 7652.1 | — |
-| B | MPC | 0/140 | 17676.4 | — |
-| B | Fixed-optimal | 0/140 | 17642.0 | — |
-| B | Fixed-operator-proxy | **23/140** | 13824.5 | — |
-| B | PI | 0/140 | 17591.0 | — |
-| C | MPC | 0/100 | 15806.2 | — |
-| C | Fixed-optimal | 0/100 | 15769.0 | — |
-| C | Fixed-operator-proxy | **167/100** | 18778.3 | — |
-| C | PI | **167/100** | 18778.3 | — |
-| D | MPC | 0/200 | 20040.9 | never |
-| D | Fixed-optimal | 0/200 | 20048.3 | never |
-| D | Fixed-operator-proxy | **121/200** | 12594.2 | **21h** |
+| D | MPC | 0/200 | 20,040.9 | never |
+| D | Fixed-optimal | 0/200 | 20,048.3 | never |
+| D | Fixed-operator-proxy | **121/200** | 12,594.2 | **21h** |
+
+**Scenario C's Fixed-operator-proxy and PI rows are identical (85/100 violations,
+18,778.3 barrels) — checked, not a copy-paste artifact.** Both approaches see the
+same simulator noise seed for Scenario C, and both independently drive the choke
+to its 100% hard ceiling and hold it there: the operator-proxy's setpoint
+function clips its believed setpoint to `CHOKE_MAX` (400 bbl/hr is far outside
+even its naive linear read), and PI's integrator saturates against the same
+ramp-clamped ceiling chasing an target it can never reach. Two different control
+laws converging to the identical fully-open trajectory, under the identical
+noise draw, produce identical readings — this is what a correct comparison looks
+like when a target is this infeasible, not a bug in either baseline.
 
 **The honest, complete story this table tells — and it's not the story the
 Scenario D setup was originally built to find:**
@@ -493,7 +537,7 @@ for the entire 200h run).
 
 **Where MPC (and Fixed-optimal) win decisively is against Fixed-operator-proxy —
 in all four scenarios, not specifically D.** Fixed-operator-proxy underproduces by
-22–37% in A/B/D and racks up massive violations everywhere (up to 167/100 in C).
+22–37% in A/B/D and racks up massive violations everywhere (up to 85/100 in C).
 But the mechanism is more specific than "operators are conservative, therefore
 unsafe": backing off 15 points *closes* the choke, which *raises* WHP and BHP
 (both lower-bounded — this direction is safe) but also *raises* FLP
@@ -513,10 +557,9 @@ setpoint) shows no measurable benefit in any of these four scenarios, given this
 model's lack of cross-channel coupling — but envelope-awareness itself (present
 in both MPC and Fixed-optimal, absent from the operator-proxy) is the variable
 that actually matters, and it matters enormously and consistently across all
-four. PI's 167/100 violations in Scenario C (summed across three pressure
-channels, so it can exceed 100) make the same point from a different angle: a
-controller with no predictive safety check — model-informed or not — will chase
-an infeasible target straight through the operating envelope.
+four. PI's 85/100 violations in Scenario C make the same point from a different
+angle: a controller with no predictive safety check — model-informed or not —
+will chase an infeasible target straight through the operating envelope.
 
 Full results: `outputs/baseline_comparison.csv`, `outputs/scenario_D_mpc.csv`,
 `outputs/scenario_D_fixed_optimal.csv`, `outputs/scenario_D_fixed_operator_proxy.csv`.
@@ -546,7 +589,12 @@ Full results: `outputs/baseline_comparison.csv`, `outputs/scenario_D_mpc.csv`,
   and, just as usefully, *ruled it out* for Q (20.0%→19.0%, unchanged across
   24–80h dwell tested) — leaving Q's bias correctly reported as a separate,
   still-open question rather than folded into an explanation that doesn't
-  actually cover it.
+  actually cover it. That open question turned out to have its own answer: a
+  one-sample lag between the fitting code and the live simulator (§1.2, Fix 2),
+  unrelated to dwell time, which dropped Q's error 19.0%→3.0% and made every
+  channel's θ match exactly. Two separate root causes, found by refusing to
+  let the first fix's partial success explain away the residual it didn't
+  actually touch.
 - **Name the controller accurately.** Calling this "brute-force MPC" implied
   guarantees (recursive feasibility, trajectory optimality) it doesn't have. It's
   a one-step receding-horizon search with hold-constant prediction, and its
@@ -559,7 +607,8 @@ Full results: `outputs/baseline_comparison.csv`, `outputs/scenario_D_mpc.csv`,
   timestamp).
 - **A correction layer earns its place by generalizing, or it doesn't ship —
   channel by channel, not as a blanket decision.** §1.3's correction helps
-  exactly one of four channels (BHP) post-fix, and is used only there. Both
-  outcomes (3 skipped, 1 used) come from the same held-out-RMSE rule with no
-  manual override — the discipline is the point, not any specific channel's
-  verdict.
+  three of four channels (Q, FLP, BHP) post-Tier-0-fix, and is skipped only for
+  WHP. Both outcomes come from the same held-out-RMSE rule with no manual
+  override — the discipline is the point, not any specific channel's verdict,
+  which is also why this list changed (from "BHP only" to "three of four")
+  without anyone hand-editing which channels are marked used.
