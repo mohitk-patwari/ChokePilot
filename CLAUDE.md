@@ -51,7 +51,7 @@ this elsewhere:
   seed-to-seed spread.
   Violation count, from the 30-seed sweep (seed_sweep.py) -- the number to
   trust, not a single cherry-picked run: every seed shows at least one
-  violation (30/30), mean 2.67/80 steps, max 4/80. Unaffected by the
+  violation (30/30), mean 3.97/80 steps, max 5/80. Unaffected by the
   DWELL_HOURS=40 fix below (identification accuracy doesn't change what the
   identified FLP curve says at low choke, which is the actual cause).
 - Scenarios B and C don't need a startup transient at all (that's Scenario A's
@@ -146,110 +146,145 @@ DONE:
   states) -- see Status above.
 - Scenario A/B/C startup-condition fix and its honest, corrected framing --
   see Known Limitation above (15% reduces but does not eliminate Scenario A's
-  extrapolation; B/C start fully inside the calibrated band).
-- Hybrid correction layer validated per-channel on held-out data via
-  select_beneficial_corrections(): currently only BHP's correction generalizes
-  and is used; Q/WHP/FLP run physics-only.
-- DWELL_HOURS 24->40 fix, confirmed (not just hypothesized) as the cause of
-  most tau identification bias: WHP/FLP/BHP mean tau error dropped
-  16%/27%/31% -> 4%/14%/8%. Q's ~19-20% bias is unaffected across every dwell
-  tested (24-80h) and remains open (see TODO).
+  deterministic FLP-ceiling violations; B/C start fully inside the calibrated
+  band).
 - WHT (wellhead temperature) and AP (annulus pressure) added to
   data/simulator.py as monitored-but-not-constrained channels -- hand-set
   placeholder params (no CSV column exists for either), never feed the
   controller's safety check or MPC objective, plotted greyed-out in
-  scenarios.py, read via Simulator.read_monitored().
-- seed_sweep.py: 30-seed distribution sweep per scenario (violation counts,
-  safety-fallback frequency) -- the source of the honest numbers now used
-  throughout docs/report.md and this file, in place of single-run numbers.
-- baselines.py: fixed-choke and IMC-tuned PI baselines vs. the MPC, same
-  scenarios/model/limits/seeds. Headline result: the safety-blind PI baseline
-  racks up 169 constraint-violation samples chasing Scenario C's infeasible
-  target; the MPC and fixed baselines both stay safe.
+  scenarios.py, read via Simulator.read_monitored(). Documented in
+  docs/report.md §1.5, docs/presentation.md, and README.md.
 - requirements.txt (pinned numpy/pandas/matplotlib/pytest) and tests/ (41
   pytest tests: ramp-rate/choke-bound actuator constraints, identified-tau
   thresholds across 5 seeds, infeasible-target safety across the 30-seed
   sweep) -- run as the safety gate before every push.
-- docs/report.md rewritten from scratch against a fresh DWELL_HOURS=40
-  pipeline run (not carried over from any earlier draft): fixes the "treats
-  the simulator as a black box" framing (identify.py imports simulator.py's
-  private fitting functions directly, so model structure is shared by
-  construction), renames "brute-force MPC" to "one-step receding-horizon
-  search with hold-constant prediction" and states plainly that safety is
-  best-effort with no recursive feasibility check, retracts the false "15% is
-  inside supported territory" claim, reconciles the pain-point count to five
-  throughout, replaces single-sample endpoint claims with trailing-10h means,
-  and adds the seed-sweep and baseline-comparison tables. Pushed.
 - verify_identification.py fixed (KeyError from WHT/AP being included in
   simulator.PARAMS but never identified by identify.py -- restricted to
   identify.CHANNELS).
 
-One-sample lag fix: _simulate_fopdt drove sim[k+1] from y_ss[k] (i.e. u[k-theta]);
-Simulator.step() drives the arriving state from u[k+1-theta] (same time index as
-the arrival sample). Fixed to y_ss[k+1] (also fixed identically in identify.py's
-_simulate_with_correction, which had the same bug plus a missed Euler-vs-ZOH
-inconsistency). This WAS Q's "unexplained ~19% tau bias" -- theta now matches
-true theta exactly in 20/20 seed x channel combinations, Q's tau error dropped
-to ~3%. Recalibrating simulator.py's own PARAMS with the fix also revealed the
-"true" theta values were themselves off by 1 this whole time (now 5.00/1,
-7.50/2, 7.00/1, 9.00/3 -- tau unchanged, theta all +1).
+**Tier-0 fix -- a one-sample lag between the fitting code and the live
+simulator (the single biggest identification-accuracy fix in the project).**
+`_simulate_fopdt` drove `sim[k+1]` from `y_ss[k]` (i.e. `u[k-theta]`), but
+`Simulator.step()` actually drives the arriving state from `u[t-theta]` --
+the same time index as the arrival sample, not one behind it. Fixed by
+changing `y_ss[k]` to `y_ss[k+1]` in `_simulate_fopdt` (and the identical bug,
+plus a missed Euler-vs-ZOH inconsistency, in identify.py's
+`_simulate_with_correction`). This was Q's previously "unexplained" ~19% tau
+bias -- theta now matches true theta exactly in 20/20 seed x channel
+combinations, Q's tau error dropped to ~3%. Recalibrating simulator.py's own
+PARAMS with the fix also revealed the "true" theta values had carried the
+identical bias the whole time (now 5.00/1, 7.50/2, 7.00/1, 9.00/3 -- tau
+unchanged, theta all +1). Net effect on the identification table: **BHP is
+now the largest residual (8.3%), not Q** -- current means/errors, 5 seeds
+(0,1,2,7,99): Q 4.95h/3.0%, WHP 7.20h/4.0%, FLP 6.95h/3.6%, BHP 8.25h/8.3%,
+all at theta_match_rate=1.0. This fix landed *after* the DWELL_HOURS fix
+below and resolved the one channel that fix couldn't touch -- two separate
+root causes, not one.
 
-Move-suppression fix: MPCController picked candidates by q_err alone (tie-break
-on move size only), so once near target, candidates within noise of each other
-on q_err got picked by noise -- chattered the valve (Scenario C: 52 moves / 154
-%-points travel over 100h). Added cost = q_err + LAMBDA_MOVE*abs(delta) (also
-applied to the fallback branch's violation-based cost, same reasoning, since
-Scenario C spends 16-23% of steps there). LAMBDA_MOVE=1.0 (bbl/hr required per
-%-point moved). Result: Scenario A/B chattering resolved (5/80, 7/140 moves).
-Scenario C only partially improved (travel 154->129, but move count 52->53
-essentially unchanged) -- root cause is different: C rides the tightened WHP
-floor (208.6 psi) with WHP noise (sigma~1.2 psi, observed swinging 207-213)
-large enough to flip which candidates are feasible step to step, which a
-cost-ranking fix within whichever set is feasible can't solve. A larger
-noise_margin_sigma would likely help; not tried.
+DWELL_HOURS 24->40 fix, confirmed (not just hypothesized) as the cause of
+most tau identification bias: WHP/FLP/BHP mean tau error dropped
+16%/27%/31% -> 4%/14%/8%. Q's ~19-20% bias was unaffected across every dwell
+tested (24-80h) at the time -- correctly reported as a separate open question,
+which the Tier-0 fix above later answered.
 
-Scenario D - Disturbance Rejection added (scenario_d.py): BHP's identified
-steady-state offset drifts -0.5 psi/h for 200h (reservoir decline, deliberate
-relaxation of the brief's "no changing reservoir properties" simplification)
-at a constant 100 bbl/hr target. Simulator gained a params= constructor arg
-(defaults to the shared global PARAMS; pass a private copy.deepcopy to drift
-one instance's plant without touching any other scenario) to support this.
+**Correction layer, re-evaluated post-Tier-0-fix: 3 of 4 channels now used,
+not just BHP.** `select_beneficial_corrections()` picks per channel from
+held-out RMSE alone, no manual override. Current verdict: Q, FLP, and BHP all
+keep a small but consistent held-out improvement (used); WHP's correction
+makes held-out RMSE very slightly worse (1.296->1.304) and is skipped. This
+verdict flipped for three channels solely because Tier-0 changed the
+underlying residuals -- nobody hand-edited which channels are marked used.
+BHP remains the channel with both the largest tau error and the largest
+correction RMSE.
 
-Second Fixed baseline added: Fixed-operator-proxy (baselines.py) -- no model,
-no envelope knowledge, a naive linear read of choke-vs-oil-rate off the raw
-reference CSV, backed off 15 points. Models pain point #1 directly. Renamed
-the original Fixed baseline to Fixed-optimal for clarity (it's still
-model-informed and envelope-aware, just set once).
+**Move-suppression (chattering) fix.** MPCController picked candidates by
+q_err alone (tie-break on move size only), so once near target, candidates
+within noise of each other on q_err got picked by noise -- chattered the
+valve (Scenario C: 52 moves / 154 %-points travel over 100h). Added
+cost = q_err + LAMBDA_MOVE*abs(delta) (also applied to the fallback branch's
+violation-based cost, since Scenario C spends ~24% of steps there).
+LAMBDA_MOVE=1.0 (bbl/hr required per %-point moved). Result: Scenario A/B
+chattering resolved (5/80 moves / 16.0 %-pts travel; 7/140 moves / 29.0 %-pts
+travel). Scenario C only partially improved (travel 154->129, move count
+52->53 essentially unchanged) -- root cause is different: C rides the
+tightened WHP floor (208.6 psi) with WHP noise (sigma~1.2 psi, observed
+swinging 207-213) large enough to flip which candidates are feasible step to
+step, which a cost-ranking fix within whichever set is feasible can't solve.
+A larger noise_margin_sigma would likely help; not tried.
 
+**Scenario D - Disturbance Rejection (scenario_d.py) + second Fixed baseline,
+Fixed-operator-proxy (baselines.py).** BHP's identified steady-state offset
+drifts -0.5 psi/h for 200h (reservoir decline, deliberate relaxation of the
+brief's "no changing reservoir properties" simplification) at a constant
+100 bbl/hr target. Simulator gained a params= constructor arg (defaults to
+the shared global PARAMS; pass a private copy.deepcopy to drift one
+instance's plant without touching any other scenario). Fixed-operator-proxy
+models pain point #1 directly: no model, no envelope knowledge, a naive
+linear read of choke-vs-oil-rate off the raw reference CSV, backed off 15
+points. The original Fixed baseline was renamed Fixed-optimal for clarity
+(still model-informed and envelope-aware, just set once).
 CORRECTED FINDING (checked against real data before writing, not assumed):
 Scenario D was built to show MPC beating a static setpoint via live
 re-planning. It doesn't -- MPC ties Fixed-optimal in ALL FOUR scenarios
-(A/B/C/D), because BHP and Q are independent, uncoupled FOPDT channels in
-this model, so the reservoir decline never gives MPC's re-planning anything
-to correct that Fixed-optimal's envelope-aware static setpoint didn't already
-handle. The real, consistent, four-for-four win is MPC/Fixed-optimal (both
+(A/B/C/D: 0/200 vs 0/200 violations, 20040.9 vs 20048.3 barrels in D), because
+BHP and Q are independent, uncoupled FOPDT channels in this model, so the
+reservoir decline never gives MPC's re-planning anything to correct that
+Fixed-optimal's envelope-aware static setpoint didn't already handle. The
+real, consistent, four-for-four win is MPC/Fixed-optimal (both
 envelope-aware) vs. Fixed-operator-proxy (not) -- e.g. D: 0/200 vs 121/200
-violations, 20048 vs 12594 barrels. Mechanism: backing off 15% closes the
-choke, which is safe for WHP/BHP (lower-bounded) but UNSAFE for FLP
-(upper-bounded) -- the same static ~19%-choke FLP-ceiling mechanism as
-Scenario A (see Known Limitation above), confirmed directly in D (violations
-start at hour 21, steady rate for all 200h -- the disturbance is a minor
-factor at most, not the cause). docs/report.md Sec 3.6 rewritten with this.
+violations, 20048.3 vs 12594.2 barrels, first violation at 21h. Mechanism:
+backing off 15% closes the choke, which is safe for WHP/BHP (lower-bounded)
+but UNSAFE for FLP (upper-bounded) -- the same static ~19%-choke FLP-ceiling
+mechanism as Scenario A (see Known Limitation above), confirmed directly in D
+(violations start at hour 21, steady rate for all 200h -- the disturbance is
+a minor factor at most, not the cause). Current baseline-comparison numbers
+(all four scenarios, all four approaches): A -- MPC 4/80/7590.4,
+Fixed-optimal 3/80/7657.6, Fixed-operator-proxy 66/80/4852.4, PI 3/80/7652.1;
+B -- MPC 0/140/17676.4, Fixed-optimal 0/140/17642.0, Fixed-operator-proxy
+23/140/13824.5, PI 0/140/17591.0; C -- MPC 0/100/15806.2, Fixed-optimal
+0/100/15769.0, Fixed-operator-proxy 85/100/18778.3, PI 85/100/18778.3 (C's
+operator-proxy and PI rows are identical because both independently saturate
+the choke to 100% under the same noise seed, not a bug); D as above.
 
-STALE, not yet refreshed against recent fixes: docs/presentation.md (still
-references the old 24h dwell and 34.4% start) and README.md (still says
-"treats it as a black box" and quotes pre-DWELL_HOURS-fix numbers, and
-doesn't mention Scenario D or the operator-proxy baseline at all) -- neither
-was part of any pass so far. docs/report.md Sections 1.2/3.2/3.3 are also
-stale (predate the one-sample-lag and/or move-suppression fixes); flagged
-inline there. Sections 2.3/3.1/3.4/3.6/3.7 are current.
+**results.json / generate_docs.py single-source-of-truth architecture.**
+scenarios.py, baselines.py, verify_identification.py, and seed_sweep.py each
+write their key numbers into outputs/results.json (via results_io.py's
+update_results(section, data) merge-write helper) instead of numbers being
+hand-typed into README.md / docs/report.md / docs/presentation.md separately
+and drifting out of sync with each other (which is exactly what had happened
+-- report.md and presentation.md were found retyped independently and had
+gone stale in different places). generate_docs.py renders
+`<!-- GENERATED:key --> ... <!-- END GENERATED -->` marker blocks in each doc
+from that one JSON file, leaving hand-written analysis prose untouched.
+Currently wired: identification_table, correction_table, safety_limits_table,
+scenario_key_results_table, actuator_activity_table,
+baseline_comparison_table_abc (A/B/C only), seed_sweep_table -- used in
+README.md (1 block) and docs/report.md (6 blocks). Scenario D is NOT sourced
+here: scenario_d.py doesn't write to results.json (a 200h run per approach is
+a different cost profile than the other scripts; not yet worth the wiring),
+so its numbers are hand-maintained wherever they appear (docs/report.md §3.6,
+docs/presentation.md), re-verified against a fresh `python scenario_d.py` run
+before being typed in each time, not carried over from memory.
+docs/presentation.md has no markers at all (a slide deck's tables are
+one-off per slide, not worth the wiring at this scope) -- its numbers are
+likewise hand-maintained but checked against the same results.json/report.md
+before publishing.
 
-TODO: refresh docs/presentation.md and README.md against the current state
-(including Scenario D / operator-proxy) -- this pass must also add one slide
-for the WHT/AP monitored-but-not-constrained channels (docs/report.md §1.5,
-README "Known limitations"), a fully-built feature that has had zero
-presentation coverage until now; resync docs/report.md's remaining stale
-sections (1.2/3.2/3.3); investigate whether a larger noise_margin_sigma
-resolves Scenario C's remaining chatter; investigate whether a scenario with
-real cross-channel coupling would let Scenario D actually differentiate MPC
-from Fixed-optimal; final polish pass.
+- docs/report.md, docs/presentation.md, and README.md are now fully resynced
+  against one fresh pipeline run (identify -> verify_identification ->
+  scenarios -> baselines -> seed_sweep -> scenario_d), including the Tier-0
+  fix, the move-suppression fix and its actuator-activity metrics, Scenario D,
+  the Fixed-operator-proxy baseline, and WHT/AP in every document.
+  docs/presentation.md was rewritten end to end (14 -> 18 slides). Exported to
+  docs/report.pdf, docs/report.pptx, docs/presentation.pdf,
+  docs/presentation.pptx via export_report.py (pandoc -> self-contained HTML
+  -> headless Chrome/Edge print, xelatex fallback) -- all four committed.
+  Full pipeline re-run confirmed reproducible: byte-identical results.json
+  except the newly-added seed_sweep section, all 41 tests pass.
+
+TODO: investigate whether a larger noise_margin_sigma resolves Scenario C's
+remaining chatter (move count barely improved, ~24% fallback rate); investigate
+whether a scenario with real cross-channel coupling would let Scenario D
+actually differentiate MPC from Fixed-optimal; wire Scenario D into
+results.json if its cost profile ever stops being the blocker; final polish
+pass.
