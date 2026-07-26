@@ -66,9 +66,9 @@ can't quietly drift out of sync with each other or with the shipped CSVs.
 <!-- GENERATED:scenario_key_results_table -->
 | Scenario | Setup | Final | Constraint violations |
 |---|---|---|---|
-| A — Startup to Target | start 15.0% choke, 80h run | 99.9 bbl/hr @ 34% choke | 4/80 |
-| B — Target Tracking | start 34.2% choke, 140h run | 150.4 bbl/hr @ 61% choke | 0/140 |
-| C — Infeasible Target | start 34.2% choke, 100h run | 160.8 bbl/hr @ 66% choke | 0/100 |
+| A — Startup to Target (15% choke -> 100 bbl/hr) | start 15.0% choke, 80h run | 99.9 bbl/hr @ 34% choke | 4/80 |
+| B — Target Tracking (34% choke -> 100 -> 150 bbl/hr at t=60h) | start 34.2% choke, 140h run | 150.4 bbl/hr @ 61% choke | 0/140 |
+| C — Infeasible Target (34% choke start, 400 bbl/hr requested) | start 34.2% choke, 100h run | 160.8 bbl/hr @ 66% choke | 0/100 |
 <!-- END GENERATED -->
 
 Ramp-rate (±5%/interval) violations: 0 across all three runs. A fourth scenario,

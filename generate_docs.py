@@ -86,6 +86,17 @@ def scenario_key_results_table(results):
     return "\n".join(rows)
 
 
+def actuator_activity_table(results):
+    """Move count and total valve travel per scenario -- the metric that catches
+    chattering (many small moves) that violation counts and barrels alone don't."""
+    rows = ["| Scenario | Moves | Total valve travel |", "|---|---|---|"]
+    for key in SCENARIO_ORDER:
+        s = results["scenarios"][key]
+        rows.append(f"| {key} | {s['move_count']} / {s['total_steps']} "
+                    f"| {s['total_travel_pct']:.1f} %-pts |")
+    return "\n".join(rows)
+
+
 def baseline_comparison_table_abc(results):
     """MPC/Fixed-optimal/Fixed-operator-proxy/PI x Scenarios A/B/C. Scenario D is not
     in results.json (scenario_d.py doesn't write to it) and is appended by hand where
@@ -104,6 +115,7 @@ RENDERERS = {
     "correction_table": correction_table,
     "safety_limits_table": safety_limits_table,
     "scenario_key_results_table": scenario_key_results_table,
+    "actuator_activity_table": actuator_activity_table,
     "baseline_comparison_table_abc": baseline_comparison_table_abc,
 }
 

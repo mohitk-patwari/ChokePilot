@@ -221,6 +221,7 @@ def main():
               f"bbl/hr, choke={df.Choke.iloc[-1]:.0f}%")
         print(f"[{name}] sample decision: {df.Why.iloc[-1]}")
         print()
+        choke_diffs = df.Choke.diff().dropna()
         results[short_name[name]] = {
             "label": titles[name], "start_choke": u0, "hours": hours,
             "violations": violations, "ramp_violations": ramp_violations, "total_steps": len(df),
@@ -230,6 +231,11 @@ def main():
             "trailing_10h_mean_q": float(df.Q.tail(10).mean()),
             "trailing_10h_mean_choke": float(df.Choke.tail(10).mean()),
             "sample_decision": df.Why.iloc[-1],
+            # Actuator activity: how often and how far the choke actually moved --
+            # the metric that catches chattering (many small moves) that violation
+            # counts and barrels alone don't (see controller.py's LAMBDA_MOVE).
+            "move_count": int((choke_diffs.abs() > 1e-6).sum()),
+            "total_travel_pct": float(choke_diffs.abs().sum()),
         }
 
     update_results("scenarios", results)

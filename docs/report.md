@@ -242,7 +242,7 @@ hand-tuned: `ceil(3 × max(τ) / Ts)`, clipped to [3, 12] hours.
 recursive feasibility check — no proof that choosing today's "safe" candidate
 guarantees a safe candidate will still exist at every future step, and no
 terminal invariant set the way a formally verified MPC would require. The
-empirical evidence in §3.4 (a 30-seed sweep) shows the safety-fallback branch
+empirical evidence in §3.5 (a 30-seed sweep) shows the safety-fallback branch
 firing at a non-trivial rate in Scenario C (15.9% of steps) precisely because the
 controller is operating at the edge of what the model considers feasible with no
 formal guarantee behind it — only a greedy, per-step search that has worked well
@@ -325,7 +325,7 @@ value actually applied — it cannot silently diverge from what was commanded.
 ## 3. Results
 
 All numbers below are from one representative run per scenario (default seeds);
-§3.4 reports the full 30-seed distribution, which is the number to trust over any
+§3.5 reports the full 30-seed distribution, which is the number to trust over any
 single run.
 
 ### 3.1 Scenario A — Startup to Target (15% choke → 100 bbl/hr, 80h)
@@ -393,11 +393,17 @@ adding a move-suppression term to both branches' cost:
 move must be worth ≥1 bbl/hr; a 5% move must be worth ≥5 bbl/hr) — matching the
 target calibration exactly, not retuned to force a result.
 
+<!-- GENERATED:actuator_activity_table -->
 | Scenario | Moves | Total valve travel |
 |---|---|---|
-| A — Startup to Target | 5 / 80 | 16.0 %-pts |
-| B — Target Tracking | 7 / 140 | 29.0 %-pts |
-| C — Infeasible Target | 53 / 100 | 129.0 %-pts (was 154.0 before this fix) |
+| A | 5 / 80 | 16.0 %-pts |
+| B | 7 / 140 | 29.0 %-pts |
+| C | 53 / 100 | 129.0 %-pts |
+<!-- END GENERATED -->
+
+(C's travel was 154.0 %-pts before the move-suppression fix — the 129.0 above is
+post-fix, rendered fresh from `outputs/results.json` each time `generate_docs.py`
+runs, same as every other table in this document.)
 
 **Honest result, not fully positive:** the fix works as intended for A and B —
 both settle and stay essentially still once near target (5 and 7 moves total,
@@ -544,7 +550,7 @@ Full results: `outputs/baseline_comparison.csv`, `outputs/scenario_D_mpc.csv`,
 - **Name the controller accurately.** Calling this "brute-force MPC" implied
   guarantees (recursive feasibility, trajectory optimality) it doesn't have. It's
   a one-step receding-horizon search with hold-constant prediction, and its
-  safety property is empirically strong (§3.4) but not formally proven. Both
+  safety property is empirically strong (§3.5) but not formally proven. Both
   things can be true, and only naming it precisely lets a reader hold both.
 - **Report distributions, not single runs.** A single seed's "0 violations" or
   "104.0 bbl/hr" is a point sample from a noisy system. The 30-seed sweep is what
