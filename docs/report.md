@@ -95,6 +95,8 @@ identification. It drives its own monotonic staircase — 0/10/20/…/100% choke
 40 hours dwell per step (`DWELL_HOURS`, see §1.2's dwell-time history below) —
 against the calibrated simulator, and fits an FOPDT model to that fresh run.
 
+![Open-loop step test: choke staircase and the resulting oil rate, WHP, FLP, and BHP response](../outputs/step_test_response.png)
+
 **Reframing a claim from an earlier draft:** `identify.py` imports `_fit_fopdt`
 and `_simulate_fopdt` directly from `data/simulator.py` — the *same* private
 fitting functions used to calibrate the simulator itself, not an independently
@@ -124,7 +126,7 @@ seed×channel combinations** — no residual off-by-one anywhere. This table is 
 result of two separate, sequential fixes, both tested and confirmed rather than
 just hypothesized:
 
-**Fix 1 — dwell time (`DWELL_HOURS` 24→40).** An earlier version of this
+**The dwell-time fix (`DWELL_HOURS` 24→40).** An earlier version of this
 experiment used a 24h dwell per step and showed mean τ error of Q 20% / WHP 16%
 / FLP 27% / BHP 31%, with identified τ lower than true τ in all 20/20
 seed×channel combinations — a one-directional bias consistent with insufficient
@@ -136,7 +138,7 @@ unchanged across every dwell length tested, 24–80h) — leaving Q's bias corre
 reported as a separate, still-open question at that point, not folded into an
 explanation that didn't actually cover it.
 
-**Fix 2 — a one-sample lag between the fitting code and the live simulator.**
+**The timing-lag fix — a one-sample lag between the fitting code and the live simulator.**
 `_simulate_fopdt` (used both to calibrate `data/simulator.py` and to fit
 `identify.py`'s step-test data) drove `sim[k+1]` from `y_ss[k]` — i.e. from
 `u[k-θ]` — but `Simulator.step()` actually drives the state arriving at sample
@@ -148,7 +150,7 @@ both code paths' indexing by hand and verifying the fixed version reproduces
 `y_ss[k+1]` in `_simulate_fopdt` (and the identical bug, plus a missed
 Euler-vs-ZOH inconsistency, in `identify.py`'s `_simulate_with_correction`).
 
-This fix is what **resolved Q's "still-open question" from Fix 1**: Q's error
+This fix is what **resolved Q's "still-open question" from the dwell-time fix**: Q's error
 dropped 19.0%→3.0%, and θ went from matching exactly for only 2 of 4 channels
 (Q, FLP) — with WHP and BHP consistently off by exactly 1 sample — to matching
 exactly for all 4. Recalibrating `simulator.py`'s own ground-truth `PARAMS` with
@@ -159,8 +161,8 @@ one-sample bias the whole time, which is why the pre-fix identified θ values
 had looked "off by exactly 1" instead of scattered: both sides of the
 comparison were shifted the same way.
 
-**BHP is now the largest residual (8.3%), not Q** — a direct consequence of Fix
-2 resolving Q's bias while leaving BHP's roughly where it was. BHP's own
+**BHP is now the largest residual (8.3%), not Q** — a direct consequence of the
+timing-lag fix resolving Q's bias while leaving BHP's roughly where it was. BHP's own
 possible explanation is in §1.3.
 
 ### 1.3 Hybrid physics + learned correction — three of four channels earn their place
@@ -178,7 +180,7 @@ step test (different noise draw) before being trusted for use:
 | WHP | 1.30 | 1.30 | ❌ skipped |
 <!-- END GENERATED -->
 
-This table changed shape after the Tier-0 one-sample-lag fix (§1.2): with the
+This table changed shape after the timing-lag fix (§1.2): with the
 old, laggy `_simulate_fopdt`, only BHP's correction generalized to held-out
 data. Post-fix, the physics-only residual on Q, FLP, and BHP each still has
 enough structure the correction layer captures — small in absolute RMSE terms
@@ -352,6 +354,8 @@ single run.
 
 ### 3.1 Scenario A — Startup to Target (15% choke → 100 bbl/hr, 80h)
 
+![Scenario A: target vs. actual oil rate, WHP, FLP, BHP, and choke position over the 80h run](../outputs/scenario_A_startup_to_target.png)
+
 - **Tracking:** trailing 10-hour mean (hours 70–79) of **99.26 bbl/hr** at a
   steady 34.0% choke.
 - **Safety, single-seed:** 4/80 constraint samples outside limits.
@@ -376,6 +380,8 @@ single run.
 
 ### 3.2 Scenario B — Target Tracking (34.2% choke start, 100→150 bbl/hr step at t=60h, 140h)
 
+![Scenario B: target vs. actual oil rate, WHP, FLP, BHP, and choke position over the 140h run, including the target step at t=60h](../outputs/scenario_B_target_tracking.png)
+
 - **Tracking:** trailing 10-hour mean **100.32 bbl/hr** at 34.2% choke before the
   step (hours 50–59); **150.57 bbl/hr** at 61.2% choke after settling
   (hours 130–139).
@@ -383,6 +389,8 @@ single run.
   the only scenario with a perfectly clean sweep.
 
 ### 3.3 Scenario C — Infeasible Target (34.2% choke start, 400 bbl/hr requested, 100h)
+
+![Scenario C: target vs. actual oil rate, WHP, FLP, BHP, and choke position — the controller settles below the infeasible 400 bbl/hr target instead of chasing it into a violation](../outputs/scenario_C_infeasible_target.png)
 
 - **Behavior:** does not chase the infeasible target into a violation. Trailing
   10-hour mean **162.76 bbl/hr** at 69.4% choke — the maximum rate the tightened
@@ -510,6 +518,31 @@ so its row is hand-maintained here, re-verified against a fresh
 | D | Fixed-optimal | 0/200 | 20,048.3 | never |
 | D | Fixed-operator-proxy | **121/200** | 12,594.2 | **21h** |
 
+**The headline: what MPC actually buys over realistic manual operation.**
+Fixed-operator-proxy stands in for a real operator working without this
+pipeline's model or envelope knowledge — the comparison that matters most, since
+it's the one this project is actually meant to replace (pain point #1). Barrel
+and per-day figures below are computed directly from `outputs/results.json`
+(barrel gain over each scenario's own run length, converted to a daily rate —
+not hand-typed):
+
+- **Scenario A:** MPC produces **+2,738 bbl more** than the operator-proxy over
+  the 80h run — **+821 bbl/day** — while cutting constraint violations from
+  **66/80 down to 4/80**.
+- **Scenario B:** **+3,852 bbl** over 140h — **+660 bbl/day** — while cutting
+  violations from **23/140 to 0/140**.
+- **Scenario C inverts, and that inversion is itself the result:** the
+  operator-proxy nominally out-produces MPC by 2,972 bbl over the 100h run
+  (**+713 bbl/day** in the proxy's favor) — but only by riding the choke wide
+  open straight through the safety envelope, racking up **85/100** constraint
+  violations against MPC's **0/100**. Output produced by blowing through a
+  pressure limit isn't a result to chase; it's the exact failure mode this
+  project exists to prevent.
+- **Scenario D** (200h, hand-verified against a fresh `python scenario_d.py`
+  run since it isn't in `results.json`) shows the same pattern at its
+  cleanest: **+7,447 bbl** total, **+893 bbl/day**, **0/200 vs. 121/200**
+  violations.
+
 **Scenario C's Fixed-operator-proxy and PI rows are identical (85/100 violations,
 18,778.3 barrels) — checked, not a copy-paste artifact.** Both approaches see the
 same simulator noise seed for Scenario C, and both independently drive the choke
@@ -521,45 +554,37 @@ laws converging to the identical fully-open trajectory, under the identical
 noise draw, produce identical readings — this is what a correct comparison looks
 like when a target is this infeasible, not a bug in either baseline.
 
-**The honest, complete story this table tells — and it's not the story the
-Scenario D setup was originally built to find:**
+**A secondary, more surprising finding: MPC ties Fixed-optimal, its
+model-informed but non-adaptive sibling, in all four scenarios — including D,
+which was built specifically to find a gap between them.** BHP and Q are
+independent FOPDT channels with no coupling in this model, so Scenario D's
+declining reservoir never moves Q off target and never drifts BHP close enough
+to its floor (ends ~170 psi above it after 200h) to matter — MPC's live
+re-planning had nothing to correct that Fixed-optimal's envelope-aware static
+setpoint didn't already handle. This is a real, checked result (both approaches
+hold choke within noise of 34.2% for the entire 200h run), not an assumption,
+but it's a narrower and less important claim than the headline above: the
+production and safety gains that actually matter come from envelope-awareness
+itself (present in both MPC and Fixed-optimal), not from live re-planning
+specifically.
 
-**MPC ties Fixed-optimal in all four scenarios, including D.** Scenario D was
-built specifically to test whether MPC's live re-planning beats a static setpoint
-once the plant drifts. It doesn't, here: in this project's model, BHP and Q are
-independent FOPDT channels with no coupling, so a declining reservoir never moves
-Q off target and never drifts BHP close enough to its floor (ends ~170 psi above
-it after 200h) to matter. MPC's re-planning had nothing to correct that
-Fixed-optimal's envelope-aware static setpoint didn't already handle. This is a
-real, checked result, not an assumption — see §3.6's data above and the mechanism
-check in the project history (both approaches hold choke within noise of 34.2%
-for the entire 200h run).
-
-**Where MPC (and Fixed-optimal) win decisively is against Fixed-operator-proxy —
-in all four scenarios, not specifically D.** Fixed-operator-proxy underproduces by
-22–37% in A/B/D and racks up massive violations everywhere (up to 85/100 in C).
-But the mechanism is more specific than "operators are conservative, therefore
-unsafe": backing off 15 points *closes* the choke, which *raises* WHP and BHP
-(both lower-bounded — this direction is safe) but also *raises* FLP
-(upper-bounded — this direction is unsafe). For a 100 bbl/hr target the naive
-belief-minus-15% lands at 18.7% choke, below the ~19% threshold (§2.3) where
-FLP's identified steady-state exceeds 200 psi. A real operator without envelope
-knowledge has no way to know that closing down is the *wrong* direction for that
-one constraint. Checked directly in Scenario D: violations start at hour 21 (as
-soon as the ramp-limited approach reaches 18.7%) and continue at a roughly steady
-rate for all 200 hours (17 in the first 50h vs. 33 in the last 50h) — the
-reservoir decline is at most a minor secondary factor, not the primary cause. The
-same static-FLP-threshold mechanism that explains Scenario A's violations (§2.3)
-is what's actually failing here, not a failure to detect the disturbance.
-
-**So the real headline is:** live re-planning (MPC's specific edge over a static
-setpoint) shows no measurable benefit in any of these four scenarios, given this
-model's lack of cross-channel coupling — but envelope-awareness itself (present
-in both MPC and Fixed-optimal, absent from the operator-proxy) is the variable
-that actually matters, and it matters enormously and consistently across all
-four. PI's 85/100 violations in Scenario C make the same point from a different
-angle: a controller with no predictive safety check — model-informed or not —
-will chase an infeasible target straight through the operating envelope.
+The mechanism behind Fixed-operator-proxy's violations is more specific than
+"operators are conservative, therefore unsafe": backing off 15 points *closes*
+the choke, which *raises* WHP and BHP (both lower-bounded — this direction is
+safe) but also *raises* FLP (upper-bounded — this direction is unsafe). For a
+100 bbl/hr target the naive belief-minus-15% lands at 18.7% choke, below the
+~19% threshold (§2.3) where FLP's identified steady-state exceeds 200 psi. A
+real operator without envelope knowledge has no way to know that closing down
+is the *wrong* direction for that one constraint. Checked directly in Scenario
+D: violations start at hour 21 (as soon as the ramp-limited approach reaches
+18.7%) and continue at a roughly steady rate for all 200 hours (17 in the first
+50h vs. 33 in the last 50h) — the reservoir decline is at most a minor
+secondary factor, not the primary cause. The same static-FLP-threshold
+mechanism that explains Scenario A's violations (§2.3) is what's actually
+failing here, not a failure to detect the disturbance. PI's 85/100 violations
+in Scenario C make the same point from a different angle: a controller with no
+predictive safety check — model-informed or not — will chase an infeasible
+target straight through the operating envelope.
 
 Full results: `outputs/baseline_comparison.csv`, `outputs/scenario_D_mpc.csv`,
 `outputs/scenario_D_fixed_optimal.csv`, `outputs/scenario_D_fixed_operator_proxy.csv`.
@@ -590,7 +615,7 @@ Full results: `outputs/baseline_comparison.csv`, `outputs/scenario_D_mpc.csv`,
   24–80h dwell tested) — leaving Q's bias correctly reported as a separate,
   still-open question rather than folded into an explanation that doesn't
   actually cover it. That open question turned out to have its own answer: a
-  one-sample lag between the fitting code and the live simulator (§1.2, Fix 2),
+  one-sample lag between the fitting code and the live simulator (§1.2),
   unrelated to dwell time, which dropped Q's error 19.0%→3.0% and made every
   channel's θ match exactly. Two separate root causes, found by refusing to
   let the first fix's partial success explain away the residual it didn't
@@ -607,7 +632,7 @@ Full results: `outputs/baseline_comparison.csv`, `outputs/scenario_D_mpc.csv`,
   timestamp).
 - **A correction layer earns its place by generalizing, or it doesn't ship —
   channel by channel, not as a blanket decision.** §1.3's correction helps
-  three of four channels (Q, FLP, BHP) post-Tier-0-fix, and is skipped only for
+  three of four channels (Q, FLP, BHP) after the timing-lag fix, and is skipped only for
   WHP. Both outcomes come from the same held-out-RMSE rule with no manual
   override — the discipline is the point, not any specific channel's verdict,
   which is also why this list changed (from "BHP only" to "three of four")
