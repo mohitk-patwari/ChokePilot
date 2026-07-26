@@ -1,0 +1,16 @@
+ChokePilot -- Start Here
+=========================
+
+Two files to open:
+
+1. docs/report.pdf
+   The full technical report: process/model identification, controller
+   design, and results for Scenarios A/B/C/D with plots, seed-sweep safety
+   distributions, and baseline comparisons.
+
+2. docs/ChokePilot_presentation_template.pdf
+   The presentation slides (Honeywell SIH submission template, filled in).
+
+Everything else in this archive is supporting source code, data, and
+generated outputs -- see README.md for the full repo layout and how to
+reproduce every number in the report/presentation from scratch.
