@@ -1,0 +1,162 @@
+"""
+Assembles the hackathon submission zip: source code, docs (rendered to PDF), and
+generated outputs, into one archive -- and refuses to ship if anything on the
+required-deliverables checklist (CLAUDE.md's "Required deliverables" line) is
+missing, either from disk before packaging or from the zip's own contents after.
+
+Usage:
+    python scripts/package_submission.py                  # -> dist/ChokePilot_submission.zip
+    python scripts/package_submission.py --out path.zip
+    python scripts/package_submission.py --check-only      # checklist only, no zip written
+
+CLAUDE.md is deliberately excluded: it's the internal working log (self-
+corrections, TODOs, in-progress reasoning), not a polished deliverable. Swap
+EXCLUDE_TOP_LEVEL if that call should go the other way.
+"""
+
+import argparse
+import shutil
+import sys
+import tempfile
+import zipfile
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+from export_report import export  # noqa: E402  (Chrome-primary/xelatex-fallback PDF path)
+
+DEFAULT_OUT = ROOT / "dist" / "ChokePilot_submission.zip"
+
+# Every one of these must exist on disk before packaging, and inside the zip
+# after -- covers CLAUDE.md's "Required deliverables": Python notebook/code,
+# open-loop step-test analysis, dynamic model ID, controller implementation,
+# results for Scenarios A/B/C with plots, architecture/report doc, presentation
+# slides. (Scenario D and the baseline comparison ship too, via INCLUDE_DIRS
+# below, but aren't on this specific checklist since the brief didn't ask for them.)
+REQUIRED_PATHS = [
+    "notebook.ipynb",
+    "data/simulator.py",
+    "identify.py",
+    "controller.py",
+    "scenarios.py",
+    "docs/report.md",
+    "docs/presentation.md",
+    "outputs/step_test_data.csv",
+    "outputs/step_test_response.png",
+    "outputs/scenario_A_startup_to_target.csv",
+    "outputs/scenario_A_startup_to_target.png",
+    "outputs/scenario_B_target_tracking.csv",
+    "outputs/scenario_B_target_tracking.png",
+    "outputs/scenario_C_infeasible_target.csv",
+    "outputs/scenario_C_infeasible_target.png",
+]
+# Generated at packaging time (not present on disk beforehand), so checked only
+# against the zip's contents, not REQUIRED_PATHS-on-disk.
+REQUIRED_GENERATED = ["docs/report.pdf", "docs/presentation.pdf"]
+
+# Whole directories/files shipped wholesale -- lazier and more robust than
+# hand-listing every output file, since outputs/ changes shape often.
+INCLUDE_DIRS = ["data", "docs", "outputs", "tests"]
+INCLUDE_TOP_LEVEL_GLOBS = ["*.py", "*.ipynb", "*.md", "*.txt"]
+EXCLUDE_TOP_LEVEL = {"CLAUDE.md"}  # internal working log -- see module docstring
+EXCLUDE_NAMES = {"__pycache__", ".pytest_cache", ".ipynb_checkpoints"}
+EXCLUDE_SUFFIXES = {".pyc"}
+
+
+def check_required_paths_on_disk():
+    missing = [p for p in REQUIRED_PATHS if not (ROOT / p).exists()]
+    if missing:
+        raise FileNotFoundError(
+            "Missing required deliverable(s) before packaging:\n  " + "\n  ".join(missing)
+        )
+    print(f"[check] all {len(REQUIRED_PATHS)} required deliverables present on disk")
+
+
+def _should_skip(path):
+    return path.name in EXCLUDE_NAMES or path.suffix in EXCLUDE_SUFFIXES
+
+
+def stage(staging_dir):
+    """Copy everything that ships into staging_dir, mirroring repo layout."""
+    for d in INCLUDE_DIRS:
+        src_dir = ROOT / d
+        if not src_dir.exists():
+            continue
+        for src in src_dir.rglob("*"):
+            if src.is_dir() or _should_skip(src):
+                continue
+            rel = src.relative_to(ROOT)
+            dst = staging_dir / rel
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dst)
+
+    for pattern in INCLUDE_TOP_LEVEL_GLOBS:
+        for src in ROOT.glob(pattern):
+            if src.name in EXCLUDE_TOP_LEVEL or _should_skip(src):
+                continue
+            shutil.copy2(src, staging_dir / src.name)
+
+
+def render_pdfs(staging_dir):
+    """PDF-render the two doc deliverables into the staging copy, via
+    export_report.export() (Chrome-primary, xelatex-fallback -- see that
+    module). Reports which engine actually rendered each file, since that's
+    exactly the fact a packaging dry run needs to surface."""
+    for name in ("report", "presentation"):
+        md_path = staging_dir / "docs" / f"{name}.md"
+        pdf_path = staging_dir / "docs" / f"{name}.pdf"
+        engine = export(md_path, pdf_path)
+        print(f"[pdf] docs/{name}.md -> docs/{name}.pdf via {engine}")
+
+
+def zip_staging(staging_dir, out_path):
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    if out_path.exists():
+        out_path.unlink()
+    with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        for src in sorted(staging_dir.rglob("*")):
+            if src.is_file():
+                zf.write(src, src.relative_to(staging_dir))
+    return out_path
+
+
+def check_zip_contents(zip_path):
+    with zipfile.ZipFile(zip_path) as zf:
+        names = set(zf.namelist())
+    # zipfile always stores '/'-separated names regardless of OS -- REQUIRED_PATHS
+    # is already forward-slash, so no conversion needed here.
+    expected = REQUIRED_PATHS + REQUIRED_GENERATED
+    missing = [p for p in expected if p not in names]
+    if missing:
+        raise AssertionError(
+            f"Zip is missing {len(missing)} required item(s):\n  " + "\n  ".join(missing)
+        )
+    print(f"[check] all {len(expected)} required deliverables confirmed inside the zip "
+          f"({len(names)} files total)")
+
+
+def build(out_path, check_only=False):
+    check_required_paths_on_disk()
+    if check_only:
+        print("[check-only] skipping zip assembly")
+        return None
+
+    with tempfile.TemporaryDirectory() as tmp:
+        staging_dir = Path(tmp)
+        stage(staging_dir)
+        render_pdfs(staging_dir)
+        zip_path = zip_staging(staging_dir, out_path)
+        check_zip_contents(zip_path)
+
+    size_mb = out_path.stat().st_size / (1024 * 1024)
+    print(f"[done] {out_path} ({size_mb:.1f} MB)")
+    return out_path
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--out", type=Path, default=DEFAULT_OUT)
+    parser.add_argument("--check-only", action="store_true",
+                         help="run the required-deliverables checklist without assembling a zip")
+    args = parser.parse_args()
+    build(args.out, check_only=args.check_only)

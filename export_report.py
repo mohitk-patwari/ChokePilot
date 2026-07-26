@@ -3,17 +3,18 @@ Markdown -> PDF / PPTX export path for the docs/ reports.
 
 PDF: pandoc renders the markdown to a single self-contained HTML file (images and
 CSS embedded via --embed-resources), then headless Chrome prints that HTML to PDF.
-
-Why not pandoc -> LaTeX -> PDF (the more common recipe): tried it first
-(--pdf-engine=xelatex, MiKTeX already installed). It silently drops every
-character its default font can't show -- confirmed missing in the rendered PDF:
-Greek letters (tau/theta/sigma/lambda), math symbols (>= <= ~=), and the check/
-cross marks (checkmark/cross) this project's tables use throughout. Getting full
-coverage in LaTeX means hand-picking fallback fonts per symbol class, forever.
-Chrome uses the real system font stack (Segoe UI + Segoe UI Symbol + Segoe UI
-Emoji), so it just renders everything correctly with zero font configuration --
-verified by re-running the same report.md through this path (see the module's
-own self-check).
+Falls back to pandoc -> LaTeX (xelatex) -> PDF if no Chrome/Edge install is found
+or the Chrome path fails for any reason (see `_to_pdf`) -- tried LaTeX first
+(--pdf-engine=xelatex, MiKTeX already installed) and it silently drops every
+character its default font can't show: Greek letters (tau/theta/sigma/lambda),
+math symbols (>= <= ~=), and the check/cross marks this project's tables use
+throughout, confirmed missing by visual inspection of a rendered page. Getting
+full coverage in LaTeX means hand-picking fallback fonts per symbol class,
+forever. Chrome uses the real system font stack (Segoe UI + Segoe UI Symbol +
+Segoe UI Emoji) and just renders everything correctly with zero font
+configuration, so it's the preferred path -- xelatex is kept only as a
+still-produces-*a*-PDF fallback for a machine without a browser installed, not
+the primary path.
 
 PPTX: pandoc's native markdown -> pptx writer, no HTML/Chrome step -- one slide
 per top-level heading, tables and images carried over automatically.
@@ -62,7 +63,10 @@ def _find_chrome():
                         "(checked PATH and the usual Program Files locations).")
 
 
-def _to_pdf(src, dst):
+def _to_pdf_chrome(src, dst):
+    """Primary path: pandoc -> self-contained HTML -> headless Chrome/Edge print.
+    Full Unicode/emoji coverage via the real system font stack (see module
+    docstring) -- preferred whenever Chrome or Edge is present."""
     with tempfile.TemporaryDirectory() as tmp:
         html_path = Path(tmp) / "report.html"
         pypandoc.convert_file(
@@ -78,6 +82,39 @@ def _to_pdf(src, dst):
         ], check=True, capture_output=True)
 
 
+def _to_pdf_xelatex(src, dst):
+    """Fallback path: pandoc -> LaTeX -> PDF via xelatex (MiKTeX). Used only when
+    no Chrome/Edge install can be found. Known gap, accepted for a fallback: the
+    default LaTeX font is missing glyphs for Greek letters, some math symbols, and
+    check/cross marks -- those render as blank boxes rather than crashing the
+    build, which is the right tradeoff for "still produce *a* PDF" under time
+    pressure, not for the final shipped version."""
+    pypandoc.convert_file(
+        str(src), "pdf", outputfile=str(dst),
+        extra_args=[f"--resource-path={src.parent}", "--pdf-engine=xelatex",
+                     "-V", "geometry:margin=1in", "--standalone"],
+    )
+
+
+def _to_pdf(src, dst):
+    """Try the Chrome/Edge path first; fall back to xelatex if no browser is
+    found or the browser path fails for any reason -- packaging a submission
+    should never hard-fail just because this machine lacks a browser install."""
+    try:
+        _find_chrome()
+    except RuntimeError as e:
+        print(f"  [PDF] no Chrome/Edge found ({e}) -- falling back to xelatex")
+        _to_pdf_xelatex(src, dst)
+        return "xelatex"
+    try:
+        _to_pdf_chrome(src, dst)
+        return "chrome"
+    except Exception as e:
+        print(f"  [PDF] Chrome/Edge render failed ({e}) -- falling back to xelatex")
+        _to_pdf_xelatex(src, dst)
+        return "xelatex"
+
+
 def _to_pptx(src, dst):
     pypandoc.convert_file(
         str(src), "pptx", outputfile=str(dst),
@@ -88,13 +125,16 @@ def _to_pptx(src, dst):
 def export(src, dst):
     src, dst = Path(src), Path(dst)
     fmt = dst.suffix.lstrip(".")
+    engine = None
     if fmt == "pdf":
-        _to_pdf(src, dst)
+        engine = _to_pdf(src, dst)
     elif fmt == "pptx":
         _to_pptx(src, dst)
     else:
         raise ValueError(f"unsupported output format: .{fmt} (use .pdf or .pptx)")
-    print(f"{src} -> {dst} ({dst.stat().st_size / 1024:.0f} KB)")
+    tag = f" [{engine}]" if engine else ""
+    print(f"{src} -> {dst}{tag} ({dst.stat().st_size / 1024:.0f} KB)")
+    return engine
 
 
 def demo():
