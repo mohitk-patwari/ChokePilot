@@ -33,13 +33,19 @@ Relative image paths in the source markdown (e.g. ../outputs/scenario_A....png)
 resolve against the input file's own directory via --resource-path.
 """
 
+import asyncio
+import base64
+import json
 import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 import pypandoc
+import requests
+import websockets
 
 _CSS = Path(__file__).parent / "docs" / "report.css"
 
@@ -63,6 +69,74 @@ def _find_chrome():
                         "(checked PATH and the usual Program Files locations).")
 
 
+def _print_to_pdf_via_cdp(chrome, html_uri, dst):
+    """Drive Chrome's DevTools Protocol directly instead of the
+    `--print-to-pdf-no-header` command-line switch. That switch stopped
+    suppressing the browser-native header/footer (page date/time, file://
+    path, page number) on this machine's Chrome build -- confirmed by testing
+    it in isolation against a trivial HTML file, with `--headless=new`,
+    `--headless` (old mode), and both boolean spellings of the flag, all of
+    which still printed the header/footer. `Page.printToPDF`'s own
+    `displayHeaderFooter` parameter is the thing that actually controls this
+    at the protocol level, and driving it directly works reliably where the
+    flag doesn't."""
+    port = 9333  # fixed -- export_report.py only ever runs one Chrome instance at a time
+    proc = subprocess.Popen([
+        chrome, "--headless=new", "--disable-gpu", "--no-sandbox",
+        f"--remote-debugging-port={port}", "about:blank",
+    ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    tab = None
+    try:
+        for _ in range(50):
+            try:
+                if requests.get(f"http://127.0.0.1:{port}/json/version", timeout=0.5).ok:
+                    break
+            except requests.exceptions.ConnectionError:
+                pass
+            time.sleep(0.2)
+        else:
+            raise RuntimeError("Chrome DevTools endpoint never came up")
+
+        tab = requests.put(f"http://127.0.0.1:{port}/json/new?{html_uri}", timeout=5).json()
+
+        async def run():
+            async with websockets.connect(tab["webSocketDebuggerUrl"], max_size=None) as ws:
+                msg_id = 0
+
+                async def send(method, params=None):
+                    nonlocal msg_id
+                    msg_id += 1
+                    await ws.send(json.dumps({"id": msg_id, "method": method, "params": params or {}}))
+                    while True:
+                        resp = json.loads(await ws.recv())
+                        if resp.get("id") == msg_id:
+                            return resp
+
+                await send("Page.enable")
+                await send("Page.navigate", {"url": html_uri})
+                while True:
+                    resp = json.loads(await ws.recv())
+                    if resp.get("method") == "Page.loadEventFired":
+                        break
+                result = await send("Page.printToPDF", {
+                    "printBackground": True,
+                    "displayHeaderFooter": False,
+                    "preferCSSPageSize": False,
+                })
+                return result["result"]["data"]
+
+        pdf_b64 = asyncio.run(run())
+        Path(dst).write_bytes(base64.b64decode(pdf_b64))
+    finally:
+        if tab is not None:
+            try:
+                requests.get(f"http://127.0.0.1:{port}/json/close/{tab['id']}", timeout=2)
+            except requests.exceptions.RequestException:
+                pass
+        proc.terminate()
+        proc.wait(timeout=5)
+
+
 def _to_pdf_chrome(src, dst):
     """Primary path: pandoc -> self-contained HTML -> headless Chrome/Edge print.
     Full Unicode/emoji coverage via the real system font stack (see module
@@ -75,11 +149,7 @@ def _to_pdf_chrome(src, dst):
                         "--embed-resources", f"--css={_CSS}"],
         )
         chrome = _find_chrome()
-        subprocess.run([
-            chrome, "--headless=new", "--disable-gpu", "--no-sandbox",
-            f"--print-to-pdf={dst}", "--print-to-pdf-no-header",
-            html_path.resolve().as_uri(),
-        ], check=True, capture_output=True)
+        _print_to_pdf_via_cdp(chrome, html_path.resolve().as_uri(), dst)
 
 
 def _to_pdf_xelatex(src, dst):
