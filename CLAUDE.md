@@ -245,8 +245,11 @@ stale (predate the one-sample-lag and/or move-suppression fixes); flagged
 inline there. Sections 2.3/3.1/3.4/3.6/3.7 are current.
 
 TODO: refresh docs/presentation.md and README.md against the current state
-(including Scenario D / operator-proxy); resync docs/report.md's remaining
-stale sections (1.2/3.2/3.3); investigate whether a larger noise_margin_sigma
+(including Scenario D / operator-proxy) -- this pass must also add one slide
+for the WHT/AP monitored-but-not-constrained channels (docs/report.md §1.5,
+README "Known limitations"), a fully-built feature that has had zero
+presentation coverage until now; resync docs/report.md's remaining stale
+sections (1.2/3.2/3.3); investigate whether a larger noise_margin_sigma
 resolves Scenario C's remaining chatter; investigate whether a scenario with
 real cross-channel coupling would let Scenario D actually differentiate MPC
 from Fixed-optimal; final polish pass.

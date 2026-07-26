@@ -46,6 +46,7 @@ from controller import (  # noqa: E402
     MPCController, safety_limits_from_reference, CHOKE_MIN, CHOKE_MAX, MAX_RAMP_PCT,
 )
 from scenarios import solve_choke_for_q, run_scenario, check_constraints  # noqa: E402
+from results_io import update_results  # noqa: E402
 
 OUTPUT_DIR = Path(__file__).parent / "outputs"
 OUTPUT_DIR.mkdir(exist_ok=True)
@@ -274,6 +275,13 @@ def main():
     print(out.to_string(index=False))
     print(f"\nsaved {OUTPUT_DIR / 'baseline_comparison.csv'}")
     plot_comparison(out)
+
+    short_name = {"A_startup_to_target": "A", "B_target_tracking": "B", "C_infeasible_target": "C"}
+    baselines_json = {}
+    for row in rows:
+        s = baselines_json.setdefault(short_name[row["scenario"]], {})
+        s[row["approach"]] = {"violations": row["safety_violations"], "barrels": row["total_barrels"]}
+    update_results("baselines", baselines_json)
 
 
 if __name__ == "__main__":

@@ -21,19 +21,11 @@ from identify import (  # noqa: E402
     evaluate_correction, select_beneficial_corrections,
 )
 from controller import safety_limits_from_reference  # noqa: E402
-from scenarios import run_scenario, solve_choke_for_q, CSV_PATH  # noqa: E402
+from scenarios import run_scenario, solve_choke_for_q, count_violations, CSV_PATH  # noqa: E402
 
 OUTPUT_DIR = Path(__file__).parent / "outputs"
 OUTPUT_DIR.mkdir(exist_ok=True)
 N_SEEDS = 30
-
-
-def count_violations(df, limits):
-    viol = pd.Series(False, index=df.index)
-    for ch in ("WHP", "FLP", "BHP"):
-        lo, hi = limits[ch]
-        viol |= (df[ch] < lo) | (df[ch] > hi)
-    return int(viol.sum())
 
 
 def fallback_fraction(df):

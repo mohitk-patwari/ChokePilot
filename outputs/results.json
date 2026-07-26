@@ -1,0 +1,189 @@
+{
+  "baselines": {
+    "A": {
+      "Fixed-operator-proxy": {
+        "barrels": 4852.402727902076,
+        "violations": 66
+      },
+      "Fixed-optimal": {
+        "barrels": 7657.554082121481,
+        "violations": 3
+      },
+      "MPC": {
+        "barrels": 7590.368907795325,
+        "violations": 4
+      },
+      "PI": {
+        "barrels": 7652.129988976165,
+        "violations": 3
+      }
+    },
+    "B": {
+      "Fixed-operator-proxy": {
+        "barrels": 13824.52701933634,
+        "violations": 23
+      },
+      "Fixed-optimal": {
+        "barrels": 17642.018959173904,
+        "violations": 0
+      },
+      "MPC": {
+        "barrels": 17676.40955980031,
+        "violations": 0
+      },
+      "PI": {
+        "barrels": 17590.970586146483,
+        "violations": 0
+      }
+    },
+    "C": {
+      "Fixed-operator-proxy": {
+        "barrels": 18778.30708996328,
+        "violations": 85
+      },
+      "Fixed-optimal": {
+        "barrels": 15768.969938866689,
+        "violations": 0
+      },
+      "MPC": {
+        "barrels": 15806.157400692124,
+        "violations": 0
+      },
+      "PI": {
+        "barrels": 18778.30708996328,
+        "violations": 85
+      }
+    }
+  },
+  "correction": {
+    "BHP": {
+      "corrected_rmse": 9.805964510060544,
+      "physics_rmse": 9.847750259300884,
+      "used": true
+    },
+    "FLP": {
+      "corrected_rmse": 0.892550763858554,
+      "physics_rmse": 0.9239851689145596,
+      "used": true
+    },
+    "Q": {
+      "corrected_rmse": 1.6298751962346987,
+      "physics_rmse": 1.66235279878196,
+      "used": true
+    },
+    "WHP": {
+      "corrected_rmse": 1.3037844639695257,
+      "physics_rmse": 1.2963214965127547,
+      "used": false
+    }
+  },
+  "identification": {
+    "channels": {
+      "BHP": {
+        "ident_tau_mean": 8.25,
+        "tau_error_pct_max": 13.88888888888889,
+        "tau_error_pct_mean": 8.333333333333332,
+        "tau_error_pct_min": 2.7777777777777777,
+        "theta_match_rate": 1.0,
+        "true_tau": 9.0,
+        "true_theta": 3
+      },
+      "FLP": {
+        "ident_tau_mean": 6.95,
+        "tau_error_pct_max": 7.142857142857143,
+        "tau_error_pct_mean": 3.5714285714285716,
+        "tau_error_pct_min": 0.0,
+        "theta_match_rate": 1.0,
+        "true_tau": 7.0,
+        "true_theta": 1
+      },
+      "Q": {
+        "ident_tau_mean": 4.95,
+        "tau_error_pct_max": 5.0,
+        "tau_error_pct_mean": 3.0,
+        "tau_error_pct_min": 0.0,
+        "theta_match_rate": 1.0,
+        "true_tau": 5.0,
+        "true_theta": 1
+      },
+      "WHP": {
+        "ident_tau_mean": 7.2,
+        "tau_error_pct_max": 6.666666666666667,
+        "tau_error_pct_mean": 4.0,
+        "tau_error_pct_min": 0.0,
+        "theta_match_rate": 1.0,
+        "true_tau": 7.5,
+        "true_theta": 2
+      }
+    },
+    "dwell_hours": 40,
+    "seeds": [
+      0,
+      1,
+      2,
+      7,
+      99
+    ]
+  },
+  "safety_limits": {
+    "BHP": [
+      2830.0,
+      null
+    ],
+    "FLP": [
+      null,
+      200.0
+    ],
+    "WHP": [
+      205.0,
+      null
+    ]
+  },
+  "scenarios": {
+    "A": {
+      "barrels": 7590.368907795325,
+      "final_choke": 34.0,
+      "final_q": 99.86362172456228,
+      "final_target_q": 100.0,
+      "hours": 80,
+      "label": "Scenario A - Startup to Target (15% choke -> 100 bbl/hr)",
+      "ramp_violations": 0,
+      "sample_decision": "Moved choke to 34.0% because it keeps WHP/FLP/BHP within safe limits over the next 12h and brings predicted oil rate to 99.3 bbl/hr, the best tradeoff between closing the 100.0 bbl/hr target gap and unnecessary valve movement among 11 feasible options.",
+      "start_choke": 15.0,
+      "total_steps": 80,
+      "trailing_10h_mean_choke": 34.0,
+      "trailing_10h_mean_q": 99.26104576094629,
+      "violations": 4
+    },
+    "B": {
+      "barrels": 17676.40955980031,
+      "final_choke": 61.2,
+      "final_q": 150.41580920201147,
+      "final_target_q": 150.0,
+      "hours": 140,
+      "label": "Scenario B - Target Tracking (34% choke -> 100 -> 150 bbl/hr at t=60h)",
+      "ramp_violations": 0,
+      "sample_decision": "Moved choke to 61.2% because it keeps WHP/FLP/BHP within safe limits over the next 12h and brings predicted oil rate to 149.9 bbl/hr, the best tradeoff between closing the 150.0 bbl/hr target gap and unnecessary valve movement among 11 feasible options.",
+      "start_choke": 34.214277967431016,
+      "total_steps": 140,
+      "trailing_10h_mean_choke": 61.20000000000001,
+      "trailing_10h_mean_q": 150.5657779781743,
+      "violations": 0
+    },
+    "C": {
+      "barrels": 15806.157400692124,
+      "final_choke": 66.2,
+      "final_q": 160.76750682198502,
+      "final_target_q": 400.0,
+      "hours": 100,
+      "label": "Scenario C - Infeasible Target (34% choke start, 400 bbl/hr requested)",
+      "ramp_violations": 0,
+      "sample_decision": "No choke move keeps all limits satisfied over the lookahead; moved to 66.2% because it minimizes the predicted constraint violation (28.8 psi-steps over horizon).",
+      "start_choke": 34.214277967431016,
+      "total_steps": 100,
+      "trailing_10h_mean_choke": 69.4,
+      "trailing_10h_mean_q": 162.7563972646048,
+      "violations": 0
+    }
+  }
+}

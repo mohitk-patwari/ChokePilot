@@ -33,7 +33,7 @@ from identify import (  # noqa: E402
 from controller import (  # noqa: E402
     MPCController, safety_limits_from_reference, CHOKE_MIN, CHOKE_MAX, MAX_RAMP_PCT,
 )
-from scenarios import solve_choke_for_q, check_constraints, CSV_PATH  # noqa: E402
+from scenarios import solve_choke_for_q, check_constraints, violation_mask, CSV_PATH  # noqa: E402
 from baselines import fixed_choke_setpoint, operator_proxy_setpoint  # noqa: E402
 
 OUTPUT_DIR = Path(__file__).parent / "outputs"
@@ -81,10 +81,7 @@ def run_fixed(setpoint, start_choke, sim_seed):
 
 
 def time_to_first_violation(df, limits):
-    viol = pd.Series(False, index=df.index)
-    for ch in ("WHP", "FLP", "BHP"):
-        lo, hi = limits[ch]
-        viol |= (df[ch] < lo) | (df[ch] > hi)
+    viol = violation_mask(df, limits)
     return float(df.loc[viol, "Time_hr"].iloc[0]) if viol.any() else None
 
 

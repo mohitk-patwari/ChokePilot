@@ -32,6 +32,7 @@ from identify import (  # noqa: E402
     evaluate_correction, select_beneficial_corrections,
 )
 from controller import MPCController, safety_limits_from_reference  # noqa: E402
+from results_io import update_results  # noqa: E402
 
 OUTPUT_DIR = Path(__file__).parent / "outputs"
 OUTPUT_DIR.mkdir(exist_ok=True)
@@ -141,11 +142,27 @@ def plot_scenario(name, title, df, limits):
     print(f"saved {path}")
 
 
-def check_constraints(name, df, limits):
-    violations = 0
+def violation_mask(df, limits):
+    """Boolean Series: True at each time step where at least one of WHP/FLP/BHP is
+    outside its limit. The single canonical definition of "a violation" project-wide
+    -- an earlier convention summed per-channel breaches separately, which double/
+    triple-counts an hour with more than one simultaneous breach and could report a
+    violation count exceeding the number of time steps (e.g. "167/100"), disagreeing
+    with the per-step convention already used by seed_sweep.py and time-to-first-
+    violation elsewhere. This is that one convention, used everywhere now."""
+    viol = pd.Series(False, index=df.index)
     for ch in ("WHP", "FLP", "BHP"):
         lo, hi = limits[ch]
-        violations += int(((df[ch] < lo) | (df[ch] > hi)).sum())
+        viol |= (df[ch] < lo) | (df[ch] > hi)
+    return viol
+
+
+def count_violations(df, limits):
+    return int(violation_mask(df, limits).sum())
+
+
+def check_constraints(name, df, limits):
+    violations = count_violations(df, limits)
     ramp_violations = int((df.Choke.diff().abs() > 5.0 + 1e-6).sum())
     print(f"[{name}] constraint samples outside limits: {violations}/{len(df)}   "
           f"ramp-rate violations: {ramp_violations}/{len(df)}")
@@ -194,14 +211,37 @@ def main():
         "C_infeasible_target": f"Scenario C - Infeasible Target ({u_stable_100:.0f}% choke start, 400 bbl/hr requested)",
     }
 
+    short_name = {"A_startup_to_target": "A", "B_target_tracking": "B", "C_infeasible_target": "C"}
+    results = {}
     for name, u0, target_fn, hours, seed in scenarios:
         df = run_scenario(name, u0, target_fn, hours, model, limits, sim_seed=seed, correction=correction)
         plot_scenario(name, titles[name], df, limits)
-        check_constraints(name, df, limits)
+        violations, ramp_violations = check_constraints(name, df, limits)
         print(f"[{name}] final: target={df.Target_Q.iloc[-1]:.1f} actual={df.Q.iloc[-1]:.1f} "
               f"bbl/hr, choke={df.Choke.iloc[-1]:.0f}%")
         print(f"[{name}] sample decision: {df.Why.iloc[-1]}")
         print()
+        results[short_name[name]] = {
+            "label": titles[name], "start_choke": u0, "hours": hours,
+            "violations": violations, "ramp_violations": ramp_violations, "total_steps": len(df),
+            "barrels": float(df.Q.sum()),
+            "final_target_q": float(df.Target_Q.iloc[-1]), "final_q": float(df.Q.iloc[-1]),
+            "final_choke": float(df.Choke.iloc[-1]),
+            "trailing_10h_mean_q": float(df.Q.tail(10).mean()),
+            "trailing_10h_mean_choke": float(df.Choke.tail(10).mean()),
+            "sample_decision": df.Why.iloc[-1],
+        }
+
+    update_results("scenarios", results)
+    # json.dumps would otherwise write +-inf as the non-standard `Infinity` token --
+    # null (no bound that side) is the portable, standard-JSON way to say the same thing.
+    update_results("safety_limits", {
+        ch: [v if math.isfinite(v) else None for v in lim] for ch, lim in limits.items()
+    })
+    update_results("correction", {
+        ch: {"physics_rmse": before, "corrected_rmse": after, "used": correction[ch] is not None}
+        for ch, (before, after) in correction_report.items()
+    })
 
 
 if __name__ == "__main__":
